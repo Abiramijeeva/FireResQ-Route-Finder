@@ -75,6 +75,29 @@ HOSPITALS = (
     },
 )
 
+
+FIRE_STATIONS = (
+    {
+        "id": "kengeri-fire-station",
+        "name": "Kengeri Fire Station",
+        "address": "Kengeri, Bengaluru, Karnataka, India",
+        "lat": 12.9179,
+        "lon": 77.4817,
+    },
+)
+
+
+def get_fire_stations():
+    return [station.copy() for station in FIRE_STATIONS]
+
+
+def get_fire_station(station_id):
+    return next(
+        (station for station in FIRE_STATIONS if station["id"] == station_id),
+        None,
+    )
+
+
 def get_hospitals():
     return [hospital.copy() for hospital in HOSPITALS]
 
@@ -162,7 +185,7 @@ def geocode_location(address, database_path):
             },
             headers={
                 "User-Agent": (
-                    "AmbulanceRouteFinder/2.0 "
+                    "FireResQ/1.0 "
                     "(educational Flask route-planning project)"
                 )
             },
@@ -253,7 +276,7 @@ def search_hospitals(query, database_path):
             },
             headers={
                 "User-Agent": (
-                    "AmbulanceRouteFinder/2.0 "
+                    "FireResQ/1.0 "
                     "(educational Flask route-planning project)"
                 )
             },
@@ -343,6 +366,119 @@ def search_hospitals(query, database_path):
     return results
 
 
+def search_fire_stations(query, database_path):
+    base_url = os.environ.get(
+        "NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"
+    ).rstrip("/")
+    _wait_for_geocoder_slot(database_path)
+    try:
+        response = requests.get(
+            f"{base_url}/search",
+            params={
+                "q": f"fire station {query}",
+                "format": "jsonv2",
+                "limit": 10,
+                "addressdetails": 1,
+                "extratags": 1,
+                "namedetails": 1,
+            },
+            headers={
+                "User-Agent": (
+                    "FireResQ/1.0 "
+                    "(educational Flask fire-emergency routing project)"
+                )
+            },
+            timeout=(3.05, 10),
+        )
+    except requests.Timeout as exc:
+        raise RoutingServiceError(
+            "OpenStreetMap fire station search timed out. Try again shortly.", 504
+        ) from exc
+    except requests.RequestException as exc:
+        raise RoutingServiceError(
+            "OpenStreetMap fire station search is temporarily unavailable.", 503
+        ) from exc
+
+    if response.status_code == 429:
+        raise RoutingServiceError(
+            "OpenStreetMap fire station search is rate-limited. Wait a moment and try again.",
+            429,
+        )
+    if response.status_code >= 500:
+        raise RoutingServiceError(
+            "OpenStreetMap fire station search is temporarily unavailable.", 503
+        )
+    if response.status_code >= 400:
+        raise RoutingServiceError(
+            "OpenStreetMap rejected the fire station search request.", 502
+        )
+    try:
+        matches = response.json()
+    except ValueError as exc:
+        raise RoutingServiceError(
+            "OpenStreetMap returned an invalid fire station response.", 502
+        ) from exc
+    if not isinstance(matches, list):
+        raise RoutingServiceError(
+            "OpenStreetMap returned an invalid fire station response.", 502
+        )
+
+    results = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        tags = match.get("extratags")
+        tags = tags if isinstance(tags, dict) else {}
+        if (
+            match.get("type") != "fire_station"
+            and tags.get("amenity") != "fire_station"
+            and tags.get("emergency") != "fire_station"
+        ):
+            continue
+        try:
+            latitude = float(match["lat"])
+            longitude = float(match["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90 <= latitude <= 90
+            or not -180 <= longitude <= 180
+        ):
+            continue
+        names = match.get("namedetails")
+        names = names if isinstance(names, dict) else {}
+        name = names.get("name") or match.get("name") or "Unnamed fire station"
+        display_name = match.get("display_name", "Address unavailable")
+        results.append(
+            {
+                "id": (
+                    f"osm-{match['osm_type']}-{match['osm_id']}"
+                    if match.get("osm_type") in {"node", "way", "relation"}
+                    and isinstance(match.get("osm_id"), (int, str))
+                    else f"osm-{latitude:.6f}-{longitude:.6f}"
+                ),
+                "name": name,
+                "display_name": display_name,
+                "lat": latitude,
+                "lon": longitude,
+                "public_details": {
+                    key: tags[key]
+                    for key in ("phone", "website")
+                    if isinstance(tags.get(key), str)
+                },
+                "osm_url": (
+                    f"https://www.openstreetmap.org/{match['osm_type']}/{match['osm_id']}"
+                    if match.get("osm_type") in {"node", "way", "relation"}
+                    and isinstance(match.get("osm_id"), (int, str))
+                    else None
+                ),
+            }
+        )
+    return results
+
+
 def _hospital_photo(name, display_name):
     place = f"{name} {display_name}".casefold()
     if "apollo" in place and "bannerghatta" in place and "bengaluru" in place:
@@ -394,7 +530,7 @@ def get_osrm_routes(origin, destination):
                 "geometries": "geojson",
                 "steps": "true",
             },
-            headers={"User-Agent": "AmbulanceRouteFinder/2.0"},
+            headers={"User-Agent": "FireResQ/1.0"},
             timeout=(3.05, 15),
         )
     except requests.Timeout as exc:

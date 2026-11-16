@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import app as web_app
 from dijkstra import dijkstra, k_shortest_routes, shortest_alternative_route
-from graph_data import ROAD_GRAPH
+from graph_data import LOCATION_DESIGNATIONS, LOCATION_NAMES, ROAD_GRAPH
 from osm_routing import make_route_options
 from trip_tracking import create_trip, get_trip
 
@@ -158,19 +158,57 @@ class RoutePlannerTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Alternative route", content)
-        self.assertIn("Critical priority", content)
+        self.assertIn("Critical severity", content)
         self.assertIn("2026-01-01 08:13", content)
         rows = self.history_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["duration_minutes"], 13)
         self.assertEqual(rows[0]["priority"], "Critical")
         self.assertEqual(rows[0]["arrival_time"], "2026-01-01T08:13")
-        self.assertIsNone(rows[0]["estimated_distance_km"])
+        self.assertEqual(rows[0]["estimated_distance_km"], 11.5)
+        self.assertEqual(rows[0]["severity"], "Critical")
+        self.assertEqual(rows[0]["source"], "H")
+        self.assertEqual(rows[0]["destination"], "P")
         self.assertEqual(json.loads(rows[0]["route_codes"]), ["H", "B", "A", "C", "D", "P"])
-        self.assertIn("Unavailable · demo network", content)
+        self.assertIn("11.5 km", content)
         self.assertIn("SAVED JOURNEYS", content)
         self.assertIn("AVERAGE ESTIMATED TIME", content)
         self.assertIn("13 min", content)
+
+    def test_fire_resq_dashboard_shows_fire_workflow_and_severity_levels(self):
+        response = self.client.get("/")
+        content = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("FireResQ", content)
+        self.assertIn("Starting Fire Station", content)
+        self.assertIn("Destination Fire Incident", content)
+        self.assertIn("Find Shortest Route", content)
+        self.assertIn("Intelligent Fire Emergency Route Finder", content)
+        self.assertIn("Faster Routes. Smarter Emergency Response.", content)
+        self.assertIn('src="/static/images/fire-engine.jpg"', content)
+        self.assertIn('src="/static/images/fire-station.jpg"', content)
+        self.assertIn('src="/static/images/fire-rescue.jpg"', content)
+        self.assertIn("CC BY-SA 4.0", content)
+        self.assertIn("Fire Station", content)
+        self.assertIn("Fire Incident", content)
+        self.assertIn("Available demo designations", content)
+        for code, name in LOCATION_NAMES.items():
+            self.assertIn(
+                f"<span>{LOCATION_DESIGNATIONS[code]}</span>{code} — {name}",
+                content,
+            )
+        for severity in ("Low", "Medium", "High", "Critical"):
+            self.assertIn(f">{severity}<", content)
+        self.assertNotIn("Ambulance", content)
+        self.assertNotIn("Hospital", content)
+        self.assertNotIn("Patient Location", content)
+        for image in ("fire-engine.jpg", "fire-station.jpg", "fire-rescue.jpg"):
+            with self.subTest(image=image):
+                image_response = self.client.get(f"/static/images/{image}")
+                status_code = image_response.status_code
+                image_response.close()
+                self.assertEqual(status_code, 200)
 
     def test_each_sample_location_pair_has_a_distinct_alternative(self):
         for source in ROAD_GRAPH:
@@ -320,11 +358,16 @@ class RoutePlannerTests(unittest.TestCase):
         migrated = self.history_rows()[0]
         self.assertEqual(migrated["duration_minutes"], 13)
         self.assertIsNone(migrated["estimated_distance_km"])
+        self.assertEqual(migrated["severity"], "High")
 
     def test_invalid_route_values_are_rejected_without_history(self):
         for values, error in (
-            ({"priority": "Urgent"}, "valid emergency priority"),
-            ({"source": "unknown"}, "valid locations"),
+            ({"priority": "Urgent"}, "valid fire severity"),
+            ({"source": "unknown"}, "start at Fire Station H"),
+            (
+                {"source": "P", "destination": "H"},
+                "end at Fire Incident P",
+            ),
             ({"departure_time": "not-a-date"}, "valid departure date"),
         ):
             response = self.client.post("/", data=self.route_form(**values))
@@ -344,7 +387,10 @@ class RoutePlannerTests(unittest.TestCase):
         content = response.get_data(as_text=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("OpenStreetMap / OSRM road-network estimate", content)
+        self.assertIn("External OpenStreetMap / OSRM road-route estimate", content)
+        self.assertIn(
+            "Dijkstra is not used to calculate these mapped routes", content
+        )
         self.assertIn("no live traffic", content)
         self.assertIn("Alternative 1", content)
         self.assertIn("12.0 km", content)
@@ -356,13 +402,15 @@ class RoutePlannerTests(unittest.TestCase):
         self.assertEqual(tile_script.status_code, 200)
         tile_script_content = tile_script.get_data(as_text=True)
         tile_script.close()
+        self.assertIn("attribution: config.attribution", tile_script_content)
+        self.assertIn("maxZoom: config.maxZoom", tile_script_content)
+        self.assertNotIn("CARTO", tile_script_content)
         self.assertIn(
             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            tile_script_content,
+            content,
         )
-        self.assertIn("OpenStreetMap contributors", tile_script_content)
-        self.assertIn("attribution: OSM_ATTRIBUTION", tile_script_content)
-        self.assertNotIn("CARTO", tile_script_content)
+        self.assertIn("OpenStreetMap contributors", content)
+        self.assertIn("strict-origin-when-cross-origin", content)
         rows = self.history_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(
@@ -373,12 +421,203 @@ class RoutePlannerTests(unittest.TestCase):
         self.assertEqual(rows[0]["estimated_distance_km"], 12.0)
         self.assertEqual(rows[0]["priority"], "High")
         self.assertEqual(rows[0]["data_source"], "osm_osrm")
-        self.assertEqual(json.loads(rows[0]["route_codes"])[-1], "Adarsh Hospital")
+        self.assertEqual(
+            json.loads(rows[0]["route_codes"])[-1], "Adarsh Hospital"
+        )
         osrm_call = get.call_args_list[1]
-        self.assertIn("/route/v1/driving/77.482,12.921;77.4847891,12.9208444", osrm_call.args[0])
+        self.assertIn(
+            "/route/v1/driving/77.482,12.921;77.4847891,12.9208444",
+            osrm_call.args[0],
+        )
         self.assertEqual(osrm_call.kwargs["params"]["geometries"], "geojson")
         self.assertEqual(osrm_call.kwargs["params"]["alternatives"], "3")
         self.assertIn("12.0 km", content)
+
+    def test_homepage_uses_valid_configured_tile_provider_and_attribution(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MAP_TILE_URL": "https://tiles.example.test/{z}/{x}/{y}.png",
+                "MAP_TILE_ATTRIBUTION": "Example tile provider",
+                "MAP_TILE_MAX_ZOOM": "17",
+            },
+        ):
+            response = self.client.get("/")
+
+        content = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("https://tiles.example.test/{z}/{x}/{y}.png", content)
+        self.assertIn("Example tile provider", content)
+        self.assertIn('"maxZoom": 17', content)
+
+    def test_invalid_tile_provider_configuration_is_reported(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MAP_TILE_URL": "http://tiles.example.test/{z}/{x}/{y}.png",
+                "MAP_TILE_ATTRIBUTION": "Example tile provider",
+                "MAP_TILE_MAX_ZOOM": "17",
+            },
+        ):
+            with self.assertRaisesRegex(ValueError, "must be an HTTPS tile URL"):
+                self.client.get("/")
+
+    @patch("app.get_osrm_routes")
+    @patch("app.geocode_location")
+    def test_osm_fire_route_starts_at_station_and_ends_at_incident(
+        self, geocode, osrm
+    ):
+        geocode.return_value = {
+            "lat": 12.925,
+            "lon": 77.495,
+            "display_name": "Fire incident, Bengaluru",
+        }
+        osrm.return_value = self.sample_osrm_routes()["routes"]
+
+        response = self.client.post(
+            "/",
+            data=self.osm_route_form(
+                origin_text="Fire incident, Bengaluru",
+                station_mode="fire_station",
+                fire_station_id="kengeri-fire-station",
+                destination_text="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(osrm.call_args.args[0]["display_name"], "Kengeri Fire Station, Kengeri, Bengaluru, Karnataka, India")
+        self.assertEqual(osrm.call_args.args[1]["display_name"], "Fire incident, Bengaluru")
+        history = self.history_rows()[0]
+        self.assertEqual(history["source"], "Kengeri Fire Station, Kengeri, Bengaluru, Karnataka, India")
+        self.assertEqual(history["destination"], "Fire incident, Bengaluru")
+
+    @patch("app.get_osrm_routes")
+    @patch("app.geocode_location")
+    def test_current_location_is_origin_and_incident_remains_destination(
+        self, geocode, osrm
+    ):
+        incident_name = "Kengeri Satellite Town, Bengaluru"
+        geocode.return_value = {
+            "lat": 12.925,
+            "lon": 77.495,
+            "display_name": incident_name,
+        }
+        osrm.return_value = self.sample_osrm_routes()["routes"]
+
+        response = self.client.post(
+            "/",
+            data=self.osm_route_form(
+                incident_text=incident_name,
+                origin_text="",
+                station_mode="current_location",
+                station_lat="12.9179",
+                station_lon="77.4817",
+                station_label="Your current location (12.917900, 77.481700)",
+                destination_text="",
+                origin_lat="",
+                origin_lon="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(osrm.call_args.args[0]["lat"], 12.9179)
+        self.assertEqual(osrm.call_args.args[0]["lon"], 77.4817)
+        self.assertEqual(osrm.call_args.args[0]["origin_type"], "current_location")
+        self.assertEqual(osrm.call_args.args[1]["display_name"], incident_name)
+        self.assertEqual(geocode.call_count, 1)
+        history = self.history_rows()[0]
+        self.assertTrue(history["source"].startswith("Your current location"))
+        self.assertEqual(history["destination"], incident_name)
+        self.assertIn("not a registered fire station", response.get_data(as_text=True))
+
+    @patch("app.get_osrm_routes")
+    @patch("app.geocode_location")
+    def test_selected_station_uses_record_coordinates_without_geocoding_station(
+        self, geocode, osrm
+    ):
+        incident_name = "Kengeri Satellite Town, Bengaluru"
+        geocode.return_value = {
+            "lat": 12.925,
+            "lon": 77.495,
+            "display_name": incident_name,
+        }
+        osrm.return_value = self.sample_osrm_routes()["routes"]
+
+        response = self.client.post(
+            "/",
+            data=self.osm_route_form(
+                incident_text=incident_name,
+                origin_text="",
+                station_mode="fire_station",
+                fire_station_id="kengeri-fire-station",
+                station_text="",
+                destination_text="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(geocode.call_count, 1)
+        self.assertEqual(osrm.call_args.args[0]["lat"], 12.9179)
+        self.assertEqual(osrm.call_args.args[0]["lon"], 77.4817)
+        self.assertEqual(osrm.call_args.args[1]["display_name"], incident_name)
+
+    @patch("osm_routing.requests.get")
+    def test_osrm_request_uses_station_then_incident_coordinates(self, get):
+        incident_name = "Kengeri Satellite Town, Bengaluru"
+        get.side_effect = [
+            FakeResponse(200, [{
+                "lat": "12.925",
+                "lon": "77.495",
+                "display_name": incident_name,
+            }]),
+            FakeResponse(200, {
+                "code": "Ok",
+                "routes": [{
+                    "duration": 600,
+                    "distance": 4500,
+                    "geometry": {
+                        "coordinates": [
+                            [77.4817, 12.9179],
+                            [77.495, 12.925],
+                        ]
+                    },
+                    "legs": [{"steps": []}],
+                }],
+            }),
+        ]
+
+        response = self.client.post(
+            "/",
+            data=self.osm_route_form(
+                incident_text=incident_name,
+                origin_text="",
+                station_mode="fire_station",
+                fire_station_id="kengeri-fire-station",
+                station_text="",
+                destination_text="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        route_call = get.call_args_list[1]
+        self.assertIn(
+            "/route/v1/driving/77.4817,12.9179;77.495,12.925",
+            route_call.args[0],
+        )
+        self.assertEqual(route_call.kwargs["params"]["overview"], "full")
+        self.assertEqual(route_call.kwargs["params"]["geometries"], "geojson")
+        content = response.get_data(as_text=True)
+        self.assertIn(
+            "Kengeri Fire Station, Kengeri, Bengaluru, Karnataka, India"
+            " → Kengeri Satellite Town, Bengaluru",
+            content,
+        )
+        history = self.history_rows()[0]
+        self.assertEqual(
+            history["source"],
+            "Kengeri Fire Station, Kengeri, Bengaluru, Karnataka, India",
+        )
+        self.assertEqual(history["destination"], incident_name)
 
     @patch("osm_routing.requests.get")
     def test_selected_osrm_alternative_is_saved_and_successful_geocode_is_cached(
@@ -537,6 +776,31 @@ class RoutePlannerTests(unittest.TestCase):
         self.assertEqual(get.call_count, 1)
         self.assertEqual(self.history_rows(), [])
 
+    @patch("app.geocode_location")
+    def test_unmatched_custom_station_suggests_area_station_search(self, geocode):
+        geocode.side_effect = web_app.RoutingServiceError(
+            "Address not found. Enter a more complete address, city, landmark, or place name.",
+            400,
+        )
+        response = self.client.post(
+            "/",
+            data=self.osm_route_form(
+                station_mode="custom_station",
+                station_text=(
+                    "Fire Station Virudhunagar, HXV3+CHP, Sivagami Puram, "
+                    "Virudhunagar, Tamil Nadu 626001, India"
+                ),
+                incident_text="Virudhunagar Bus Stand, Virudhunagar, Tamil Nadu, India",
+                origin_text="",
+            ),
+        )
+
+        content = response.get_data(as_text=True)
+        self.assertIn("Could not locate the starting fire station", content)
+        self.assertIn("Search OpenStreetMap by town or area", content)
+        self.assertIn("Virudhunagar", content)
+        self.assertEqual(self.history_rows(), [])
+
     @patch("osm_routing.requests.get")
     def test_worldwide_origin_is_not_restricted_to_kengeri(self, get):
         get.side_effect = [
@@ -616,7 +880,10 @@ class RoutePlannerTests(unittest.TestCase):
             "/", data=self.osm_route_form(routing_mode="google")
         )
 
-        self.assertIn("Enter a starting address", missing_origin.get_data(as_text=True))
+        self.assertIn(
+            "destination fire incident address",
+            missing_origin.get_data(as_text=True),
+        )
         self.assertIn("valid routing mode", unknown_mode.get_data(as_text=True))
         self.assertEqual(self.history_rows(), [])
 
@@ -651,9 +918,9 @@ class RoutePlannerTests(unittest.TestCase):
 
         content = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Trip planned", content)
+        self.assertIn("Fire response planned", content)
         self.assertIn("/trips/", content)
-        self.assertIn("Private driver link", content)
+        self.assertIn("Private fire-unit link", content)
         self.assertIn("Private dispatcher link", content)
         self.assertEqual(geocode.call_count, 2)
         with web_app.database_connection() as connection:
@@ -663,6 +930,79 @@ class RoutePlannerTests(unittest.TestCase):
         self.assertEqual(trip["status"], "planned")
         self.assertNotIn(trip["driver_token_hash"], content)
         self.assertNotIn(trip["viewer_token_hash"], content)
+
+    @patch("app.get_osrm_routes")
+    @patch("app.geocode_location")
+    def test_fire_dispatch_routes_from_selected_station_to_incident(
+        self, geocode, osrm
+    ):
+        geocode.return_value = {
+            "lat": 12.925,
+            "lon": 77.495,
+            "display_name": "Fire incident, Bengaluru",
+        }
+        osrm.return_value = self.sample_osrm_routes()["routes"]
+
+        response = self.client.post(
+            "/dispatch",
+            data={
+                "fire_unit_id": "FIRE-42",
+                "fire_station": "Kengeri Fire Station",
+                "fire_station_lat": "12.9179",
+                "fire_station_lon": "77.4817",
+                "incident": "Fire incident, Bengaluru",
+                "severity": "Critical",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("FIRE-42", response.get_data(as_text=True))
+        self.assertIn("Critical", response.get_data(as_text=True))
+        self.assertEqual(geocode.call_count, 1)
+        self.assertEqual(osrm.call_args.args[0]["lat"], 12.9179)
+        self.assertEqual(osrm.call_args.args[0]["lon"], 77.4817)
+        self.assertEqual(osrm.call_args.args[1]["display_name"], "Fire incident, Bengaluru")
+        content = response.get_data(as_text=True)
+        map_data = json.loads(
+            content.split(
+                'id="dispatch-map-data" type="application/json">', 1
+            )[1].split("</script>", 1)[0]
+        )
+        self.assertEqual(map_data["station"]["lat"], 12.9179)
+        self.assertEqual(map_data["station"]["lon"], 77.4817)
+        self.assertEqual(map_data["incident"]["lat"], 12.925)
+        self.assertEqual(map_data["incident"]["lon"], 77.495)
+        self.assertEqual(map_data["route"]["geometry"][0], [77.482, 12.921])
+        self.assertIn("12.0 km", content)
+        self.assertIn("10 min", content)
+        with web_app.database_connection() as connection:
+            trip = connection.execute("SELECT * FROM trips").fetchone()
+        self.assertEqual(trip["fire_unit_id"], "FIRE-42")
+        self.assertEqual(trip["severity"], "Critical")
+        self.assertEqual(trip["origin_name"], "Kengeri Fire Station")
+        self.assertEqual(trip["destination_name"], "Fire incident, Bengaluru")
+
+    def test_dispatch_page_renders_visible_openstreetmap_route_map(self):
+        response = self.client.get("/dispatch")
+        content = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="dispatch-route-map"', content)
+        self.assertIn('class="dispatch-route-map"', content)
+        self.assertIn("No calculated route yet.", content)
+        self.assertIn("Route details and directions", content)
+        self.assertIn(
+            'https://tile.openstreetmap.org/{z}/{x}/{y}.png', content
+        )
+        self.assertIn("OpenStreetMap contributors", content)
+        self.assertIn("leaflet@1.9.4/dist/leaflet.css", content)
+        self.assertIn("leaflet@1.9.4/dist/leaflet.js", content)
+        style_response = self.client.get("/static/style.css")
+        styles = style_response.get_data(as_text=True)
+        style_response.close()
+        self.assertIn(".dispatch-route-map", styles)
+        self.assertIn("min-height: 450px", styles)
+        self.assertIn("width: 100%", styles)
 
     @patch("app.get_osrm_routes")
     @patch("app.geocode_location")
@@ -719,10 +1059,29 @@ class RoutePlannerTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
         self.assertEqual(authorized.status_code, 200)
-        self.assertEqual(authorized.json["ambulance_id"], "AMB-TEST-1")
+        self.assertEqual(authorized.json["fire_unit_id"], "AMB-TEST-1")
+        self.assertEqual(authorized.json["severity"], "Critical")
+        self.assertNotIn("ambulance_id", authorized.json)
+        self.assertNotIn("priority", authorized.json)
         self.assertNotIn("driver_token_hash", authorized.json)
         self.assertEqual(authorized.headers["Cache-Control"], "no-store, private")
         self.assertEqual(authorized.headers["Referrer-Policy"], "no-referrer")
+
+    def test_driver_and_dispatcher_pages_include_map_tile_configuration(self):
+        trip_id, _, _ = self.make_trip()
+        tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+
+        for role in ("driver", "dispatcher"):
+            with self.subTest(role=role):
+                response = self.client.get(f"/trips/{trip_id}/{role}")
+                content = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(
+                    'id="trip-map-tile-config" type="application/json"',
+                    content,
+                )
+                self.assertIn(tile_url, content)
+                self.assertIn("OpenStreetMap contributors", content)
 
     def test_trip_lifecycle_records_gps_summary_and_clears_exact_location(self):
         trip_id, driver_token, viewer_token = self.make_trip()
@@ -984,6 +1343,67 @@ class RoutePlannerTests(unittest.TestCase):
             empty = self.client.get("/api/hospitals/search?q=Nowhere")
         self.assertEqual(empty.status_code, 200)
         self.assertEqual(empty.json["results"], [])
+
+    @patch("osm_routing._wait_for_geocoder_slot")
+    @patch("osm_routing.requests.get")
+    def test_fire_station_search_filters_openstreetmap_results(
+        self, get, wait_for_slot
+    ):
+        get.return_value = FakeResponse(200, [
+            {
+                "type": "fire_station",
+                "lat": "12.9179",
+                "lon": "77.4817",
+                "display_name": "Kengeri Fire Station, Bengaluru",
+                "namedetails": {"name": "Kengeri Fire Station"},
+                "extratags": {"phone": "0800000000"},
+                "osm_type": "node",
+                "osm_id": 456,
+            },
+            {
+                "type": "hospital",
+                "lat": "12.921",
+                "lon": "77.482",
+                "display_name": "Not a fire station",
+            },
+        ])
+
+        response = self.client.get("/api/fire-stations/search?q=Kengeri")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json["results"]), 1)
+        station = response.json["results"][0]
+        self.assertEqual(station["id"], "osm-node-456")
+        self.assertEqual(station["name"], "Kengeri Fire Station")
+        self.assertEqual(station["public_details"], {"phone": "0800000000"})
+        self.assertEqual(get.call_args.kwargs["params"]["q"], "fire station Kengeri")
+        wait_for_slot.assert_called_once()
+
+    @patch("app.geocode_location")
+    def test_incident_geocode_endpoint_returns_coordinates_and_display_name(
+        self, geocode
+    ):
+        geocode.return_value = {
+            "lat": 12.925,
+            "lon": 77.495,
+            "display_name": "Kengeri Satellite Town, Bengaluru, India",
+        }
+
+        response = self.client.get(
+            "/api/geocode?q=Kengeri%20Satellite%20Town%2C%20Bengaluru"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["location"]["lat"], 12.925)
+        self.assertEqual(response.json["location"]["lon"], 77.495)
+        geocode.assert_called_once_with(
+            "Kengeri Satellite Town, Bengaluru", web_app.DATABASE_PATH
+        )
+
+    def test_incident_geocode_endpoint_rejects_empty_query(self):
+        response = self.client.get("/api/geocode?q=%20")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("3 and 256 characters", response.json["error"])
 
 
 if __name__ == "__main__":

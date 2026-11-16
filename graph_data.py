@@ -10,11 +10,35 @@ ROAD_GRAPH = {
     "P": [("C", 6), ("D", 3)],
 }
 
+# Approximate sample-road lengths in kilometers; Dijkstra continues to optimize
+# travel time from ROAD_GRAPH rather than these display-only distance values.
+ROAD_DISTANCES_KM = {
+    "A:H": 3.2,
+    "B:H": 1.8,
+    "A:B": 1.1,
+    "A:C": 4.4,
+    "A:D": 7.6,
+    "B:C": 6.3,
+    "B:D": 8.0,
+    "C:D": 1.7,
+    "C:P": 5.2,
+    "D:P": 2.5,
+}
+
 LOCATION_NAMES = {
-    "H": "Hospital",
+    "H": "Fire Station",
     "A": "Junction A",
     "B": "Junction B",
     "C": "Junction C",
     "D": "Junction D",
-    "P": "Patient Location",
+    "P": "Fire Incident Location",
+}
+
+LOCATION_DESIGNATIONS = {
+    "H": "Fire station",
+    "A": "Road junction",
+    "B": "Road junction",
+    "C": "Road junction",
+    "D": "Road junction",
+    "P": "Fire incident",
 }

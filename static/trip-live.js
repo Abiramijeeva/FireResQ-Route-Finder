@@ -5,13 +5,14 @@
     }
     const tripId = root.dataset.tripId;
     const role = root.dataset.role;
-    const tokenKey = `routecare:${tripId}:${role}`;
+    const tokenKey = `fireresq:${tripId}:${role}`;
     const tokenFromLink = new URLSearchParams(window.location.hash.slice(1)).get("token");
     if (tokenFromLink) {
         sessionStorage.setItem(tokenKey, tokenFromLink);
         window.history.replaceState(null, "", window.location.pathname);
     }
-    const token = tokenFromLink || sessionStorage.getItem(tokenKey);
+    const token = tokenFromLink || sessionStorage.getItem(tokenKey) ||
+        sessionStorage.getItem(`routecare:${tripId}:${role}`);
     const connectionState = document.getElementById("connection-state");
     const errorBox = document.getElementById("trip-error");
     const warning = document.getElementById("tracking-warning");
@@ -26,7 +27,8 @@
     let baseMapInitialized = false;
     let hasFittedMap = false;
     let routeLayer = null;
-    let ambulanceMarker = null;
+    let stationMarker = null;
+    let fireUnitMarker = null;
     let destinationMarker = null;
     let positionWatch = null;
     let locationRequest = Promise.resolve();
@@ -38,6 +40,22 @@
     function showError(message) {
         errorBox.hidden = !message;
         errorBox.textContent = message || "";
+    }
+
+    function readMapTileConfig() {
+        const element = document.getElementById("trip-map-tile-config");
+        if (!element) {
+            throw new Error("OpenStreetMap tile configuration is missing.");
+        }
+        try {
+            const config = JSON.parse(element.textContent);
+            if (!config || typeof config !== "object" || Array.isArray(config)) {
+                throw new Error("OpenStreetMap tile configuration is invalid.");
+            }
+            return config;
+        } catch (error) {
+            throw new Error(`OpenStreetMap tile configuration could not be read: ${error.message}`);
+        }
     }
 
     async function requestJson(path, options = {}) {
@@ -132,20 +150,35 @@
                 }
             ).addTo(map);
         }
-        destinationMarker.bindPopup(data.destination.name);
+        destinationMarker.bindPopup(`Fire incident: ${data.destination.name}`);
         points.push([data.destination.lat, data.destination.lon]);
+        if (!stationMarker) {
+            stationMarker = L.circleMarker(
+                [data.origin.lat, data.origin.lon],
+                {
+                    radius: 8,
+                    color: "#9b3028",
+                    fillColor: "#c44536",
+                    fillOpacity: 0.9,
+                }
+            ).addTo(map);
+        } else {
+            stationMarker.setLatLng([data.origin.lat, data.origin.lon]);
+        }
+        stationMarker.bindPopup(`Fire station: ${data.origin.name}`);
+        points.push([data.origin.lat, data.origin.lon]);
         if (data.last_lat !== null && data.last_lon !== null) {
             const location = [data.last_lat, data.last_lon];
-            if (!ambulanceMarker) {
-                ambulanceMarker = L.marker(location).addTo(map);
+            if (!fireUnitMarker) {
+                fireUnitMarker = L.marker(location).addTo(map);
             } else {
-                ambulanceMarker.setLatLng(location);
+                fireUnitMarker.setLatLng(location);
             }
-            ambulanceMarker.bindPopup(`${data.ambulance_id} · last reported position`);
+            fireUnitMarker.bindPopup(`${data.fire_unit_id} · last reported position`);
             points.push(location);
-        } else if (ambulanceMarker) {
-            ambulanceMarker.remove();
-            ambulanceMarker = null;
+        } else if (fireUnitMarker) {
+            fireUnitMarker.remove();
+            fireUnitMarker = null;
         }
         if (points.length) {
             const bounds = L.latLngBounds(points);
@@ -161,8 +194,15 @@
             map.setView([data.origin.lat, data.origin.lon], 13);
         }
         if (!baseMapInitialized) {
-            window.addOpenStreetMapBaseLayer(map);
-            baseMapInitialized = true;
+            try {
+                if (typeof window.addOpenStreetMapBaseLayer !== "function") {
+                    throw new Error("OpenStreetMap tile layer could not be initialized.");
+                }
+                window.addOpenStreetMapBaseLayer(map, readMapTileConfig());
+                baseMapInitialized = true;
+            } catch (error) {
+                showError(error.message);
+            }
         }
         window.setTimeout(() => map.invalidateSize(), 0);
     }
@@ -171,9 +211,12 @@
         const statusChanged = trip && trip.status !== data.status;
         trip = data;
         summary.replaceChildren(
-            makeSummaryCard("AMBULANCE ID", data.ambulance_id, `Trip ${data.id.slice(0, 8)}`),
-            makeSummaryCard("TRIP STATUS", data.status.toUpperCase(), `Priority: ${data.priority}`),
-            makeSummaryCard("DESTINATION", data.destination.name, `From: ${data.origin.name}`),
+            makeSummaryCard("FIRE UNIT", data.fire_unit_id, `Trip ${data.id.slice(0, 8)}`),
+            makeSummaryCard("TRIP STATUS", data.status.toUpperCase(), `Severity: ${data.severity}`),
+            makeSummaryCard("FIRE STATION", data.origin.name),
+            makeSummaryCard("FIRE INCIDENT", data.destination.name),
+            makeSummaryCard("PLANNED DISTANCE", `${(data.planned_distance_m / 1000).toFixed(1)} km`),
+            makeSummaryCard("ESTIMATED TIME", `${Math.ceil(data.planned_duration_s / 60)} min`),
             makeSummaryCard(
                 "LAST GPS UPDATE",
                 displayTime(data.last_location_at),
@@ -252,7 +295,7 @@
             if (trip.status === "tracking") {
                 warning.textContent = role === "driver"
                     ? "Tracking is active. GPS updates are shared with the authorized dispatcher."
-                    : "Tracking active. Ambulance marker shows the latest accepted GPS position.";
+                    : "Tracking active. Fire unit marker shows the latest accepted GPS position.";
             } else {
                 warning.textContent = `Trip status: ${trip.status}.`;
             }

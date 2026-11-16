@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <title>Ambulance Route Finder</title>
+    <title>FireResQ – Intelligent Fire Emergency Route Finder</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 </head>
@@ -12,17 +12,17 @@
     <div class="app-shell">
         <aside class="sidebar section-nav">
             <div class="brand">
-                <div class="brand-icon">✚</div>
+                <div class="brand-icon">FR</div>
                 <div>
-                    <div class="brand-title">RouteCare</div>
-                    <div class="brand-subtitle">Emergency route planner</div>
+                <div class="brand-title">FireResQ</div>
+                <div class="brand-subtitle">Fire emergency routing</div>
                 </div>
             </div>
 
             <div class="side-label">WORKSPACE</div>
             <a class="nav-item active" href="#route-planner"><span>⌁</span> Route Planner</a>
             <a class="nav-item" href="#road-network"><span>◎</span> Road Network</a>
-            <a class="nav-item" href="/dispatch"><span>↗</span> Live Dispatch</a>
+            <a class="nav-item" href="/dispatch"><span>↗</span> Fire Dispatch</a>
 
             <div class="sidebar-note">
                 <div class="status-dot"></div>
@@ -38,34 +38,32 @@
             <nav class="mobile-nav section-nav" aria-label="Page sections">
                 <a class="nav-item active" href="#route-planner">Route Planner</a>
                 <a class="nav-item" href="#road-network">Road Network</a>
-                <a class="nav-item" href="/dispatch">Live Dispatch</a>
+                <a class="nav-item" href="/dispatch">Fire Dispatch</a>
             </nav>
-            <header class="topbar">
-                <div class="home-heading">
-                    <div>
-                        <div class="eyebrow">EMERGENCY TRANSPORTATION</div>
-                        <h1>Ambulance Route Finder</h1>
-                        <p class="subtitle">Compare demo-network routes or OpenStreetMap road estimates. No live traffic is provided.</p>
+            <header class="hero-banner">
+                <img class="hero-image"
+                     src="{{ url_for('static', filename='images/fire-engine.jpg') }}"
+                     onerror="this.onerror=null;this.src='{{ url_for('static', filename='images/fire-rescue.jpg') }}'"
+                     alt="Red tanker fire engine ready for emergency response"
+                     width="1920" height="1080" fetchpriority="high">
+                <div class="hero-overlay"></div>
+                <div class="hero-content">
+                    <div class="hero-status">
+                        <div class="live-pill" id="osm-source-pill" {% if routing_mode != "osm" %}hidden{% endif %}><span></span> OSRM road estimate · no live traffic</div>
+                        <div class="demo-pill" id="demo-source-pill" {% if routing_mode == "osm" %}hidden{% endif %}><span></span> Dijkstra demo · simulated network</div>
                     </div>
-                    <figure class="home-ambulance-photo">
-                        <img src="{{ url_for('static', filename='images/ambulance-india.jpg') }}"
-                             alt="Ambulance vehicle in India"
-                             width="1280" height="960" fetchpriority="high">
-                        <figcaption>
-                            <a href="https://commons.wikimedia.org/wiki/File:Ambulance_in_India.jpg"
-                               target="_blank" rel="noopener noreferrer">Photo: Oleg Yunakov · CC BY-SA 4.0</a>
-                        </figcaption>
-                    </figure>
+                    <div class="eyebrow">FIRE &amp; RESCUE OPERATIONS</div>
+                    <h1>FireResQ <span>– Intelligent Fire Emergency Route Finder</span></h1>
+                    <p class="hero-subtitle">Faster Routes. Smarter Emergency Response.</p>
+                    <p class="hero-description">Plan a station-to-incident response, compare route estimates, and explore the road network.</p>
                 </div>
-                <div class="live-pill" id="osm-source-pill" {% if routing_mode != "osm" %}hidden{% endif %}><span></span> OSM road estimate · no live traffic</div>
-                <div class="demo-pill" id="demo-source-pill" {% if routing_mode == "osm" %}hidden{% endif %}><span></span> Demo mode · simulated sample graph</div>
             </header>
 
             <section class="stats-grid">
                 <article class="stat-card">
                     <div class="stat-label">LOCATIONS</div>
-                    <div class="stat-value" id="location-count">{{ "08" if routing_mode == "osm" else "06" }}</div>
-                    <div class="stat-foot" id="location-count-label">{{ "Kengeri hospital choices" if routing_mode == "osm" else "Vertices in sample graph" }}</div>
+                    <div class="stat-value" id="location-count">{{ "01" if routing_mode == "osm" else "06" }}</div>
+                    <div class="stat-foot" id="location-count-label">{{ "Listed fire stations" if routing_mode == "osm" else "Vertices in sample graph" }}</div>
                 </article>
                 <article class="stat-card">
                     <div class="stat-label">ROAD CONNECTIONS</div>
@@ -74,13 +72,41 @@
                 </article>
                 <article class="stat-card">
                     <div class="stat-label">ROUTING ALGORITHM</div>
-                    <div class="stat-value algorithm-value" id="algorithm-value">{{ "OSRM + Dijkstra" if routing_mode == "osm" else "Dijkstra" }}</div>
-                    <div class="stat-foot" id="algorithm-label">{{ "OSRM route options ranked by min-heap Dijkstra" if routing_mode == "osm" else "Weighted graph + Min Heap" }}</div>
+                    <div class="stat-value algorithm-value" id="algorithm-value">{{ "External OSRM" if routing_mode == "osm" else "Dijkstra" }}</div>
+                    <div class="stat-foot" id="algorithm-label">{{ "Mapped-road routes calculated by OSRM; Dijkstra is used in demo mode" if routing_mode == "osm" else "Weighted graph + Min Heap priority queue" }}</div>
                 </article>
                 <article class="stat-card">
-                    <div class="stat-label">EMERGENCY PRIORITY</div>
-                    <div class="stat-value priority-value priority-{{ priority | lower }}">{{ priority }}</div>
-                    <div class="stat-foot">Selected for this dispatch</div>
+                    <div class="stat-label">FIRE SEVERITY</div>
+                    <div class="stat-value severity-value severity-{{ severity | lower }}">{{ severity }}</div>
+                    <div class="stat-foot">Low · Medium · High · Critical</div>
+                </article>
+            </section>
+
+            <section class="visual-info-grid" aria-label="Fire response information">
+                <article class="visual-info-card station-info-card">
+                    <img src="{{ url_for('static', filename='images/fire-station.jpg') }}"
+                         onerror="this.onerror=null;this.src='{{ url_for('static', filename='images/fire-engine.jpg') }}'"
+                         alt="Photograph of Braunton Fire Station in North Devon"
+                         width="1920" height="1080" loading="lazy">
+                    <div class="visual-info-copy">
+                        <div class="eyebrow">FIRE STATION</div>
+                        <h2>Choose a response station</h2>
+                        <p>Set the fire station as the route origin and the incident as its destination. The featured station photograph is representative and is not a live station-status feed.</p>
+                        <a class="info-link" href="/dispatch">Search fire stations <span aria-hidden="true">→</span></a>
+                    </div>
+                    <p class="image-credit">Photo: Dietmar Rabich · CC BY-SA 4.0 · <a href="https://commons.wikimedia.org/wiki/File:Braunton_(Devon,_UK),_Fire_Station_--_2013_--_00156.jpg" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a></p>
+                </article>
+                <article class="visual-info-card emergency-info-card">
+                    <img src="{{ url_for('static', filename='images/fire-rescue.jpg') }}"
+                         onerror="this.onerror=null;this.src='{{ url_for('static', filename='images/fire-engine.jpg') }}'"
+                         alt="Firefighters conducting a simulated aircraft rescue firefighting exercise"
+                         width="1920" height="1080" loading="lazy">
+                    <div class="visual-info-copy">
+                        <div class="eyebrow">RESPONSE INFORMATION</div>
+                        <h2>Plan with verified information</h2>
+                        <p>Mapped routes and demo estimates do not show live traffic, fire conditions, or unit availability. For an active emergency, contact your local emergency services directly.</p>
+                    </div>
+                    <p class="image-credit">Training photo: U.S. Air Force · public domain · <a href="https://commons.wikimedia.org/wiki/File:Fire_rescue_training_exercise_(8540120).jpg" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a></p>
                 </article>
             </section>
 
@@ -92,7 +118,7 @@
                     <div class="panel-heading">
                         <div>
                             <h2>Plan a route</h2>
-                            <p>Choose demo routing or an OSM road route, priority, and departure time.</p>
+                            <p>Choose station and incident locations, severity, and departure time.</p>
                         </div>
                         <div class="panel-icon">↗</div>
                     </div>
@@ -106,69 +132,115 @@
                         </select>
 
                         <div id="demo-location-fields" {% if routing_mode != "demo" %}hidden{% endif %}>
-                            <label for="source">Starting location</label>
+                            <label for="source">Starting Fire Station</label>
                             <select name="source" id="source">
                                 {% for loc in locations %}
+                                {% if loc.code == "H" %}
                                 <option value="{{ loc.code }}" {% if source == loc.code %}selected{% endif %}>
                                     {{ loc.code }} — {{ loc.name }}
                                 </option>
+                                {% endif %}
                                 {% endfor %}
                             </select>
 
                             <div class="route-connector"><span></span></div>
 
-                            <label for="destination">Destination</label>
+                            <label for="destination">Destination Fire Incident</label>
                             <select name="destination" id="destination">
                                 {% for loc in locations %}
+                                {% if loc.code == "P" %}
                                 <option value="{{ loc.code }}" {% if destination == loc.code %}selected{% endif %}>
                                     {{ loc.code }} — {{ loc.name }}
                                 </option>
+                                {% endif %}
                                 {% endfor %}
                             </select>
+                            <section class="demo-designation-list" aria-labelledby="demo-designation-title">
+                                <h3 id="demo-designation-title">Available demo designations</h3>
+                                <p>All nodes in the simulated network; only the station and incident nodes are route endpoints.</p>
+                                <ul>
+                                    {% for loc in locations %}
+                                    <li><span>{{ loc.designation }}</span>{{ loc.code }} — {{ loc.name }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </section>
                         </div>
 
                         <div id="osm-location-fields" {% if routing_mode != "osm" %}hidden{% endif %}>
-                            <label for="origin_text">Starting address</label>
-                            <input type="text" id="origin_text" name="origin_text" maxlength="256"
-                                   placeholder="Address, city, landmark, or place anywhere in the world"
-                                   value="{{ origin_text }}">
-                            <input type="hidden" name="origin_lat" id="origin_lat" value="{{ origin_lat }}">
-                            <input type="hidden" name="origin_lon" id="origin_lon" value="{{ origin_lon }}">
+                            <label for="station_mode">Starting Fire Station</label>
+                            <select name="station_mode" id="station_mode">
+                                <option value="fire_station" {% if station_mode == "fire_station" %}selected{% endif %}>Choose a listed fire station</option>
+                                <option value="current_location" {% if station_mode == "current_location" %}selected{% endif %}>Use my current location (not a registered fire station)</option>
+                                <option value="custom_station" {% if station_mode == "custom_station" %}selected{% endif %}>Enter another fire station address</option>
+                            </select>
+                            <div id="fire-station-fields">
+                                <label for="fire_station_id">Registered fire station</label>
+                                <select name="fire_station_id" id="fire_station_id">
+                                    {% for station in fire_stations %}
+                                    <option value="{{ station.id }}"
+                                            data-lat="{{ station.lat }}"
+                                            data-lon="{{ station.lon }}"
+                                            data-name="{{ station.name }}"
+                                            data-address="{{ station.address }}"
+                                            {% if station_id == station.id %}selected{% endif %}>
+                                        {{ station.name }} — {{ station.address }}
+                                    </option>
+                                    {% else %}
+                                    <option value="" disabled selected>No registered stations; search by area below.</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div id="fire-station-search-fields">
+                                <label for="fire-station-query" class="form-spaced-label">Find a fire station by name or area</label>
+                                <div class="station-search-row">
+                                    <input type="text" id="fire-station-query" maxlength="120"
+                                           placeholder="e.g. Virudhunagar">
+                                    <button type="button" class="secondary-button" id="fire-station-search-button">Search</button>
+                                </div>
+                                <p class="field-note" id="fire-station-search-status" role="status" aria-live="polite">
+                                    Search by town or area, then select a listed OpenStreetMap station. Plus Codes may not work as free-text addresses.
+                                </p>
+                            </div>
+                            <div id="current-origin-fields" {% if station_mode != "current_location" %}hidden{% endif %}>
+                                <label for="current-origin-label">Selected origin (not a registered station)</label>
+                                <input type="text" id="current-origin-label" value="{{ station_label }}" readonly>
+                            </div>
+                            <div id="custom-station-fields">
+                                <label for="station_text">Fire station address, city, or landmark</label>
+                                <input type="text" id="station_text" name="station_text" maxlength="256"
+                                       placeholder="e.g. Kengeri Fire Station, Bengaluru"
+                                       value="{{ station_text }}">
+                                <p class="field-note">If the station address is not found, search by its town or area above and select the matching station listing.</p>
+                            </div>
+                            <input type="hidden" name="station_lat" id="station_lat" value="{{ station_lat }}">
+                            <input type="hidden" name="station_lon" id="station_lon" value="{{ station_lon }}">
+                            <input type="hidden" name="station_label" id="station_label" value="{{ station_label }}">
                             <button type="button" class="secondary-button location-button" id="use-current-location">
-                                Use My Current Location
+                                Use Current Location as Starting Point
                             </button>
-                            <p class="field-note" id="location-status" role="status">
-                                Use an address worldwide or allow location access in your browser.
+                            <p class="field-note" id="origin-status" role="status" aria-live="polite">
+                                Select a registered station or search OpenStreetMap. Browser location is an unregistered origin.
                             </p>
                             <div class="route-connector"><span></span></div>
-                            <label for="destination_mode">Destination type</label>
-                            <select name="destination_mode" id="destination_mode">
-                                <option value="hospital" {% if destination_mode == "hospital" %}selected{% endif %}>Choose a listed Kengeri hospital</option>
-                                <option value="custom" {% if destination_mode == "custom" %}selected{% endif %}>Enter a custom destination worldwide</option>
-                            </select>
-                            <div id="hospital-destination-fields">
-                            <label for="hospital_id">Hospital destination</label>
-                            <select name="hospital_id" id="hospital_id">
-                                {% for hospital in hospitals %}
-                                <option value="{{ hospital.id }}" {% if hospital_id == hospital.id %}selected{% endif %}>
-                                    {{ hospital.name }} — {{ hospital.address }}
-                                </option>
-                                {% endfor %}
-                            </select>
-                            </div>
-                            <div id="custom-destination-fields">
-                                <label for="destination_text">Destination address, city, landmark, or hospital</label>
-                                <input type="text" id="destination_text" name="destination_text" maxlength="256"
-                                       placeholder="e.g. Apollo Hospital, Chennai, India"
-                                       value="{{ destination_text }}">
-                            </div>
-                            <p class="field-note">Nominatim searches are submitted manually (no autocomplete) and cached. OSRM routes any supported mapped road connection worldwide; it does not provide current traffic.</p>
+                            <label for="incident_text">Destination Fire Incident</label>
+                            <input type="text" id="incident_text" name="incident_text" maxlength="256"
+                                   placeholder="Address, landmark, or city of the fire incident"
+                                   value="{{ incident_text }}">
+                            <input type="hidden" name="incident_lat" id="incident_lat" value="{{ incident_lat }}">
+                            <input type="hidden" name="incident_lon" id="incident_lon" value="{{ incident_lon }}">
+                            <button type="button" class="secondary-button location-button" id="locate-incident">
+                                Locate Fire Incident on Map
+                            </button>
+                            <p class="field-note" id="location-status" role="status" aria-live="polite">
+                                Enter a specific incident address, then locate it on the map or submit to search.
+                            </p>
+                            <p class="field-note">The route starts at the selected fire station and ends at the incident. OSRM provides mapped-road estimates, not live traffic.</p>
                         </div>
 
-                        <label for="priority" class="form-spaced-label">Emergency priority</label>
-                        <select name="priority" id="priority" required>
-                            {% for option in priorities %}
-                            <option value="{{ option }}" {% if priority == option %}selected{% endif %}>{{ option }}</option>
+                        <label for="severity" class="form-spaced-label">Fire severity</label>
+                        <select name="severity" id="severity" required>
+                            {% for option in severities %}
+                            <option value="{{ option }}" {% if severity == option %}selected{% endif %}>{{ option }}</option>
                             {% endfor %}
                         </select>
 
@@ -176,7 +248,7 @@
                         <input type="datetime-local" id="departure_time" name="departure_time"
                                value="{{ departure_value }}" required>
 
-                        <button type="submit" class="primary-button" id="route-submit-button">Find and compare routes <span>→</span></button>
+                        <button type="submit" class="primary-button" id="route-submit-button">Find Shortest Route <span>→</span></button>
                         <p class="refresh-status" id="route-submit-status" role="status" hidden>Calculating route options…</p>
                     </form>
 
@@ -187,10 +259,10 @@
                                 <div class="result-kicker">ROUTE COMPARISON</div>
                                 <h3 id="route-results-title">Available routes</h3>
                             </div>
-                            <span class="priority-badge priority-{{ result.priority | lower }}">{{ result.priority }} priority</span>
+                            <span class="severity-badge severity-{{ result.severity | lower }}">{{ result.severity }} severity</span>
                         </div>
                         {% if result.mode == "osm" %}
-                        <p class="result-caption">OpenStreetMap / OSRM road-network estimate · alternatives compared by Dijkstra · no live traffic · departure {{ result.departure }}.</p>
+                        <p class="result-caption">External OpenStreetMap / OSRM road-route estimate · Dijkstra is not used to calculate these mapped routes · no live traffic · departure {{ result.departure }}.</p>
                         {% else %}
                         <p class="result-caption">Simulated sample network · departure {{ result.departure }}.</p>
                         {% endif %}
@@ -209,7 +281,10 @@
                                     {% if route.is_selected %}<span class="selected-tag">Selected</span>{% endif %}
                                 </div>
                                 <div class="route-option-time">{{ route.duration }} <span>min</span></div>
-                                {% if route.mode == "osm" %}<div class="route-option-distance">{{ "%.1f"|format(route.distance_km) }} km</div>{% endif %}
+                                <div class="route-option-distance">
+                                    {{ "%.1f"|format(route.distance_km) }} km
+                                    {% if route.mode == "demo" %}<span>approx. sample-road distance</span>{% endif %}
+                                </div>
                                 <div class="path-chips">
                                     {% for code in (route.path_names if route.mode == 'osm' else route.path) %}
                                     <span class="path-chip">{{ code }}</span>
@@ -227,13 +302,16 @@
                                     <input type="hidden" name="source" value="{{ source }}">
                                     <input type="hidden" name="destination" value="{{ destination }}">
                                     <input type="hidden" name="routing_mode" value="{{ routing_mode }}">
-                                    <input type="hidden" name="origin_text" value="{{ origin_text }}">
-                                    <input type="hidden" name="hospital_id" value="{{ hospital_id }}">
-                                    <input type="hidden" name="destination_mode" value="{{ destination_mode }}">
-                                    <input type="hidden" name="destination_text" value="{{ destination_text }}">
-                                    <input type="hidden" name="origin_lat" value="{{ origin_lat }}">
-                                    <input type="hidden" name="origin_lon" value="{{ origin_lon }}">
-                                    <input type="hidden" name="priority" value="{{ result.priority }}">
+                                    <input type="hidden" name="incident_text" value="{{ incident_text }}">
+                                    <input type="hidden" name="fire_station_id" value="{{ station_id }}">
+                                    <input type="hidden" name="station_mode" value="{{ station_mode }}">
+                                    <input type="hidden" name="station_text" value="{{ station_text }}">
+                                    <input type="hidden" name="station_lat" value="{{ station_lat }}">
+                                    <input type="hidden" name="station_lon" value="{{ station_lon }}">
+                                    <input type="hidden" name="station_label" value="{{ station_label }}">
+                                    <input type="hidden" name="incident_lat" value="{{ incident_lat }}">
+                                    <input type="hidden" name="incident_lon" value="{{ incident_lon }}">
+                                    <input type="hidden" name="severity" value="{{ result.severity }}">
                                     <input type="hidden" name="departure_time" value="{{ departure_value }}">
                                     <input type="hidden" name="route_index" value="{{ loop.index0 }}">
                                     <button type="submit" class="secondary-button">Select this route and save</button>
@@ -294,7 +372,7 @@
                     <div class="panel-heading">
                         <div>
                             <h2 id="osm-map-title" {% if routing_mode != "osm" %}hidden{% endif %}>OpenStreetMap road map</h2>
-                            <p id="osm-map-description" {% if routing_mode != "osm" %}hidden{% endif %}>OSRM driving route estimates and mapped Kengeri hospitals · not live traffic.</p>
+                            <p id="osm-map-description" {% if routing_mode != "osm" %}hidden{% endif %}>OSRM mapped-road estimates between the fire station and incident · not live traffic.</p>
                             <h2 id="demo-map-title" {% if routing_mode == "osm" %}hidden{% endif %}>Sample road network · demo only</h2>
                             <p id="demo-map-description" {% if routing_mode == "osm" %}hidden{% endif %}>Displayed road weights and manual closures apply only to the Dijkstra demo network.</p>
                         </div>
@@ -302,8 +380,9 @@
                         <div class="map-legend" id="demo-map-legend" {% if routing_mode == "osm" %}hidden{% endif %}><span></span> Open road <i></i> Closed</div>
                     </div>
                     <div id="osm-map-panel" {% if routing_mode != "osm" %}hidden{% endif %}>
-                        <div id="osm-map" class="osm-map" role="img" aria-label="OpenStreetMap with route start, destination, and driving route"></div>
-                        <div class="osm-attribution">Listed hospitals are a local Kengeri-area sample; custom destinations can be worldwide.</div>
+                    <div id="osm-map" class="osm-map" aria-label="Interactive OpenStreetMap with route start, destination, and driving route"></div>
+                    <p id="osm-map-status" class="osm-attribution" role="status" aria-live="polite">Choose OpenStreetMap routing to load the interactive map.</p>
+                    <div class="osm-attribution">© OpenStreetMap contributors. Public station listings can be incomplete or outdated; verify locations before use.</div>
                     </div>
                     <div id="demo-map-panel" {% if routing_mode == "osm" %}hidden{% endif %}>
                         <div class="network-wrap">
@@ -319,9 +398,9 @@
                         </svg>
                         </div>
                         <div class="network-caption">
-                            <span><i class="legend-dot hospital"></i> Hospital</span>
+                            <span><i class="legend-dot fire-station"></i> Fire Station</span>
                             <span><i class="legend-dot junction"></i> Junction</span>
-                            <span><i class="legend-dot patient"></i> Patient</span>
+                            <span><i class="legend-dot incident"></i> Fire Incident</span>
                         </div>
                     </div>
 
@@ -420,10 +499,10 @@
                                 <td>{{ item.source }}</td>
                                 <td>{{ item.destination }}</td>
                                 <td>{{ item.route }}</td>
-                                <td>{% if item.distance_km is not none %}{{ "%.1f"|format(item.distance_km) }} km{% else %}Unavailable · demo network{% endif %}</td>
+                                <td>{% if item.distance_km is not none %}{{ "%.1f"|format(item.distance_km) }} km{% else %}Unavailable{% endif %}</td>
                                 <td>{{ item.duration }} min</td>
                                 <td>{{ item.arrival }}</td>
-                                <td><span class="priority-badge priority-{{ item.priority | lower }}">{{ item.priority }}</span></td>
+                                <td><span class="severity-badge severity-{{ item.severity | lower }}">{{ item.severity }}</span></td>
                                 <td>{{ {"osm_osrm": "OSM / OSRM road estimate", "google_live": "Legacy Google record"}.get(item.data_source, "Demo simulation") }}</td>
                             </tr>
                             {% endfor %}
@@ -516,7 +595,7 @@
             });
         }
 
-        const osmHospitals = {{ hospitals | tojson }};
+        const osmFireStations = {{ fire_stations | tojson }};
         const osmRoutes = {{ (result.routes if result and result.mode == "osm" else []) | tojson }};
         const modeSelect = document.getElementById("routing_mode");
         const demoFields = document.getElementById("demo-location-fields");
@@ -525,20 +604,35 @@
         const osmMapPanel = document.getElementById("osm-map-panel");
         const sourceSelect = document.getElementById("source");
         const destinationSelect = document.getElementById("destination");
-        const originInput = document.getElementById("origin_text");
-        const hospitalSelect = document.getElementById("hospital_id");
-        const destinationMode = document.getElementById("destination_mode");
-        const hospitalDestinationFields = document.getElementById("hospital-destination-fields");
-        const customDestinationFields = document.getElementById("custom-destination-fields");
-        const customDestinationInput = document.getElementById("destination_text");
-        const originLatitude = document.getElementById("origin_lat");
-        const originLongitude = document.getElementById("origin_lon");
+        const incidentInput = document.getElementById("incident_text");
+        const fireStationSelect = document.getElementById("fire_station_id");
+        const stationSearchInput = document.getElementById("fire-station-query");
+        const stationSearchButton = document.getElementById("fire-station-search-button");
+        const stationSearchStatus = document.getElementById("fire-station-search-status");
+        const stationSearchFields = document.getElementById("fire-station-search-fields");
+        const stationMode = document.getElementById("station_mode");
+        const fireStationFields = document.getElementById("fire-station-fields");
+        const currentOriginFields = document.getElementById("current-origin-fields");
+        const currentOriginLabel = document.getElementById("current-origin-label");
+        const customStationFields = document.getElementById("custom-station-fields");
+        const customStationInput = document.getElementById("station_text");
+        const stationLatitude = document.getElementById("station_lat");
+        const stationLongitude = document.getElementById("station_lon");
+        const stationLabel = document.getElementById("station_label");
+        const incidentLatitude = document.getElementById("incident_lat");
+        const incidentLongitude = document.getElementById("incident_lon");
         const locationStatus = document.getElementById("location-status");
+        const originStatus = document.getElementById("origin-status");
+        const mapStatus = document.getElementById("osm-map-status");
         const routeForm = document.getElementById("route-form");
         const routeSubmitButton = document.getElementById("route-submit-button");
         const routeSubmitStatus = document.getElementById("route-submit-status");
+        const mapTileConfig = {{ map_tile_config | tojson }};
         let osmMap = null;
-        let currentLocationMarker = null;
+        let osmMapResizeObserver = null;
+        let routeLayers = null;
+        let markerLayers = null;
+        let locationSearchSequence = 0;
 
         function popupLabel(text) {
             const element = document.createElement("div");
@@ -547,52 +641,174 @@
         }
 
         function initializeOsmMap() {
-            if (osmMap || typeof L === "undefined") {
+            if (osmMap) {
+                return true;
+            }
+            if (typeof L === "undefined") {
+                mapStatus.textContent = "The map library did not load. Check your internet connection and reload.";
+                return false;
+            }
+            try {
+                osmMap = L.map("osm-map", {scrollWheelZoom: true});
+                routeLayers = L.layerGroup().addTo(osmMap);
+                markerLayers = L.layerGroup().addTo(osmMap);
+                if (typeof window.addOpenStreetMapBaseLayer !== "function") {
+                    throw new Error("OpenStreetMap tile layer could not be initialized.");
+                }
+                window.addOpenStreetMapBaseLayer(osmMap, mapTileConfig);
+                mapStatus.textContent = osmRoutes.length
+                    ? `Route loaded from ${osmRoutes[0].origin.display_name} to ${osmRoutes[0].destination.name}.`
+                    : "Interactive map ready. Tile-provider attribution is shown on the map.";
+                if (osmRoutes.length) {
+                    osmRoutes.forEach(route => {
+                        const routeCoordinates = route.geometry.map(
+                            ([longitude, latitude]) => [latitude, longitude]
+                        );
+                        L.polyline(routeCoordinates, {
+                            color: route.is_selected ? "#167d68" : "#457eb3",
+                            weight: route.is_selected ? 6 : 4,
+                            opacity: route.is_selected ? 0.9 : 0.7,
+                            dashArray: route.is_selected ? null : "8 8"
+                        }).addTo(routeLayers).bindPopup(popupLabel(
+                            `${route.label}: ${route.duration} min, ${route.distance_km.toFixed(1)} km`
+                        ));
+                    });
+                }
+                refreshMapLocations();
+                window.setTimeout(() => osmMap.invalidateSize(), 100);
+                if ("ResizeObserver" in window) {
+                    osmMapResizeObserver = new ResizeObserver(() => {
+                        if (osmMap && !osmMapPanel.hidden) {
+                            window.requestAnimationFrame(
+                                () => osmMap?.invalidateSize({pan: false})
+                            );
+                        }
+                    });
+                    osmMapResizeObserver.observe(osmMap.getContainer());
+                }
+                return true;
+            } catch (error) {
+                console.error("OpenStreetMap initialization failed:", error);
+                mapStatus.textContent = "The map could not be initialized. Reload the page or check the browser console.";
+                osmMapResizeObserver?.disconnect();
+                osmMapResizeObserver = null;
+                osmMap?.remove();
+                osmMap = null;
+                routeLayers = null;
+                markerLayers = null;
+                return false;
+            }
+        }
+
+        function selectedStationOrigin() {
+            if (stationMode.value === "current_location") {
+                if (!stationLatitude.value || !stationLongitude.value) {
+                    return null;
+                }
+                return {
+                    lat: Number(stationLatitude.value),
+                    lon: Number(stationLongitude.value),
+                    label: stationLabel.value || currentOriginLabel.value || "Your current location",
+                    current: true
+                };
+            }
+            if (stationMode.value === "custom_station") {
+                return stationLatitude.value && stationLongitude.value
+                    ? {
+                        lat: Number(stationLatitude.value),
+                        lon: Number(stationLongitude.value),
+                        label: stationLabel.value || customStationInput.value,
+                        current: false
+                    }
+                    : null;
+            }
+            const option = fireStationSelect.selectedOptions[0];
+            if (!option || !option.dataset.lat || !option.dataset.lon) {
+                return null;
+            }
+            return {
+                lat: Number(option.dataset.lat),
+                lon: Number(option.dataset.lon),
+                label: option.dataset.name || option.textContent.trim(),
+                current: false
+            };
+        }
+
+        function refreshMapLocations() {
+            if (!osmMap || !markerLayers) {
                 return;
             }
-            osmMap = L.map("osm-map").setView([0, 0], 2);
-
-            osmHospitals.forEach(hospital => {
-                L.circleMarker([hospital.lat, hospital.lon], {
-                    radius: 6, color: "#b44d42", fillColor: "#ef8f78", fillOpacity: 0.9
-                }).addTo(osmMap).bindPopup(popupLabel(`${hospital.name} — ${hospital.address}`));
-            });
-
-            let visibleCoordinates = [];
-            osmRoutes.forEach(route => {
-                const latLngs = route.geometry.map(([longitude, latitude]) => [latitude, longitude]);
-                const isSelected = route.is_selected;
-                const line = L.polyline(latLngs, {
-                    color: isSelected ? "#167d68" : "#457eb3",
-                    weight: isSelected ? 6 : 4,
-                    opacity: isSelected ? 0.9 : 0.7,
-                    dashArray: isSelected ? null : "8 8"
-                }).addTo(osmMap);
-                line.bindPopup(popupLabel(`${route.label}: ${route.duration} min, ${route.distance_km.toFixed(1)} km`));
-                visibleCoordinates = visibleCoordinates.concat(latLngs);
-            });
-
-            if (osmRoutes.length) {
-                const origin = osmRoutes[0].origin;
-                const destination = osmRoutes[0].destination;
-                L.marker([origin.lat, origin.lon]).addTo(osmMap)
-                    .bindPopup(popupLabel(`Start: ${origin.display_name}`));
-                L.marker([destination.lat, destination.lon]).addTo(osmMap)
-                    .bindPopup(popupLabel(`Destination: ${destination.name}`));
-                visibleCoordinates.push(
-                    [origin.lat, origin.lon],
-                    [destination.lat, destination.lon]
-                );
-                if (visibleCoordinates.length) {
-                    osmMap.fitBounds(visibleCoordinates, {padding: [24, 24]});
-                }
-            } else if (osmHospitals.length) {
-                osmMap.fitBounds(
-                    osmHospitals.map(hospital => [hospital.lat, hospital.lon]),
-                    {padding: [24, 24], maxZoom: 13}
-                );
+            markerLayers.clearLayers();
+            const coordinates = [];
+            let origin = selectedStationOrigin();
+            let incident = null;
+            if (osmRoutes.length && !document.querySelector(".result-box")?.hidden) {
+                const routeOrigin = osmRoutes[0].origin;
+                const routeDestination = osmRoutes[0].destination;
+                origin = {
+                    lat: routeOrigin.lat,
+                    lon: routeOrigin.lon,
+                    label: routeOrigin.display_name,
+                    current: routeOrigin.origin_type === "current_location"
+                };
+                incident = {
+                    lat: routeDestination.lat,
+                    lon: routeDestination.lon,
+                    label: routeDestination.name
+                };
+            } else if (incidentLatitude.value && incidentLongitude.value) {
+                incident = {
+                    lat: Number(incidentLatitude.value),
+                    lon: Number(incidentLongitude.value),
+                    label: incidentInput.value
+                };
             }
-            window.addOpenStreetMapBaseLayer(osmMap);
+            const validCoordinates = location =>
+                Number.isFinite(location.lat) &&
+                Number.isFinite(location.lon) &&
+                location.lat >= -90 &&
+                location.lat <= 90 &&
+                location.lon >= -180 &&
+                location.lon <= 180;
+            const invalidCoordinates =
+                (origin && !validCoordinates(origin)) ||
+                (incident && !validCoordinates(incident));
+            if (origin && validCoordinates(origin)) {
+                const originMarker = L.marker([origin.lat, origin.lon]).addTo(markerLayers);
+                originMarker.bindPopup(popupLabel(
+                    origin.current
+                        ? `Current starting location (not a registered fire station): ${origin.label}`
+                        : `Starting Fire Station: ${origin.label}`
+                ));
+                coordinates.push([origin.lat, origin.lon]);
+            }
+            if (incident && validCoordinates(incident)) {
+                L.marker([incident.lat, incident.lon]).addTo(markerLayers)
+                    .bindPopup(popupLabel(`Destination Fire Incident: ${incident.label}`));
+                coordinates.push([incident.lat, incident.lon]);
+            }
+            if (coordinates.length > 1) {
+                osmMap.fitBounds(coordinates, {padding: [24, 24], maxZoom: 16});
+            } else if (coordinates.length === 1) {
+                osmMap.setView(coordinates[0], 14);
+            } else if (coordinates.length === 0 && !invalidCoordinates) {
+                mapStatus.textContent = "Select a starting station and locate the destination to show both map markers.";
+            }
+            if (invalidCoordinates) {
+                mapStatus.textContent =
+                    "A location has invalid coordinates. Select or locate a valid starting point and incident.";
+            }
+        }
+
+        function clearStaleRoute() {
+            if (routeLayers) {
+                routeLayers.clearLayers();
+            }
+            mapStatus.textContent = "Route cleared because a location changed. Recalculate to display a fresh route.";
+            document.querySelectorAll(".result-box").forEach(result => {
+                result.hidden = true;
+            });
+            refreshMapLocations();
         }
 
         function updateLocationFields() {
@@ -609,76 +825,188 @@
             document.getElementById("demo-map-description").hidden = isOsm;
             document.getElementById("osm-map-legend").hidden = !isOsm;
             document.getElementById("demo-map-legend").hidden = isOsm;
-            document.getElementById("location-count").textContent = isOsm ? "08" : "06";
+            document.getElementById("location-count").textContent =             isOsm ? String(osmFireStations.length).padStart(2, "0") : "06";
             document.getElementById("location-count-label").textContent =
-                isOsm ? "Kengeri hospital choices" : "Vertices in sample graph";
+            isOsm ? "Listed fire stations" : "Vertices in sample graph";
             document.getElementById("road-count").textContent = isOsm ? "OSM" : "10";
             document.getElementById("road-count-label").textContent =
                 isOsm ? "OSRM road network" : "Undirected weighted roads";
             document.getElementById("algorithm-value").textContent =
-                isOsm ? "OSRM + Dijkstra" : "Dijkstra";
+                isOsm ? "External OSRM" : "Dijkstra";
             document.getElementById("algorithm-label").textContent =
-                isOsm ? "OSRM route options ranked by min-heap Dijkstra" :
-                    "Weighted graph + Min Heap";
+                isOsm ? "Mapped-road routes calculated by OSRM; Dijkstra is used in demo mode" :
+                    "Weighted graph + Min Heap priority queue";
             sourceSelect.required = !isOsm;
             destinationSelect.required = !isOsm;
-            originInput.required = isOsm;
-            const useHospital = destinationMode.value === "hospital";
-            hospitalDestinationFields.hidden = !useHospital;
-            customDestinationFields.hidden = useHospital;
-            hospitalSelect.required = isOsm && useHospital;
-            customDestinationInput.required = isOsm && !useHospital;
+            incidentInput.required = isOsm;
+            const useListedStation = stationMode.value === "fire_station";
+            fireStationFields.hidden = !useListedStation;
+            stationSearchFields.hidden = !isOsm || stationMode.value === "current_location";
+            currentOriginFields.hidden = stationMode.value !== "current_location";
+            customStationFields.hidden = stationMode.value !== "custom_station";
+            fireStationSelect.required = isOsm && useListedStation &&
+                fireStationSelect.options.length > 0 &&
+                !fireStationSelect.options[0].disabled;
+            customStationInput.required = isOsm && stationMode.value === "custom_station";
             if (isOsm) {
-                if (typeof L === "undefined") {
-                    locationStatus.textContent = "The map library could not load. Check your internet connection; address routing may still be available.";
-                } else {
-                    initializeOsmMap();
-                    if (osmMap) {
-                        window.setTimeout(() => osmMap.invalidateSize(), 0);
-                    }
-                }
+                initializeOsmMap();
+                refreshMapLocations();
+                window.setTimeout(() => osmMap?.invalidateSize(), 100);
             }
         }
 
         modeSelect.addEventListener("change", updateLocationFields);
-        destinationMode.addEventListener("change", updateLocationFields);
+        stationMode.addEventListener("change", () => {
+            stationLatitude.value = "";
+            stationLongitude.value = "";
+            stationLabel.value = "";
+            currentOriginLabel.value = "";
+            clearStaleRoute();
+            updateLocationFields();
+        });
+        fireStationSelect.addEventListener("change", () => {
+            const option = fireStationSelect.selectedOptions[0];
+            stationMode.value = "fire_station";
+            stationLatitude.value = option?.dataset.lat || "";
+            stationLongitude.value = option?.dataset.lon || "";
+            stationLabel.value = option
+                ? `${option.dataset.name || option.textContent.trim()} — ${option.dataset.address || ""}`
+                : "";
+            originStatus.textContent = option
+                ? `Starting at ${stationLabel.value}. Stored station coordinates are used without address geocoding.`
+                : "Choose a registered station or search OpenStreetMap.";
+            clearStaleRoute();
+            updateLocationFields();
+        });
         updateLocationFields();
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && osmMap && !osmMapPanel.hidden) {
+                window.requestAnimationFrame(
+                    () => osmMap?.invalidateSize({pan: false})
+                );
+            }
+        });
 
         document.getElementById("use-current-location").addEventListener("click", () => {
             if (!navigator.geolocation) {
-                locationStatus.textContent = "This browser does not support location detection. Enter a starting address instead.";
+                originStatus.textContent = "This browser does not support location detection. Select or search for a fire station.";
                 return;
             }
-            locationStatus.textContent = "Requesting permission to access your current location…";
+            originStatus.textContent = "Requesting permission to access your current location…";
             navigator.geolocation.getCurrentPosition(position => {
                 const latitude = position.coords.latitude;
                 const longitude = position.coords.longitude;
-                originLatitude.value = latitude.toFixed(6);
-                originLongitude.value = longitude.toFixed(6);
-                originInput.value = "Current location";
-                locationStatus.textContent = "Location detected. Submit the form to calculate a route.";
-                initializeOsmMap();
-                if (osmMap) {
-                    osmMap.setView([latitude, longitude], 14);
-                    if (currentLocationMarker) {
-                        currentLocationMarker.remove();
-                    }
-                    currentLocationMarker = L.marker([latitude, longitude]).addTo(osmMap)
-                        .bindPopup(popupLabel("Your current location")).openPopup();
-                }
+                stationMode.value = "current_location";
+                stationLatitude.value = latitude.toFixed(6);
+                stationLongitude.value = longitude.toFixed(6);
+                stationLabel.value = `Your current location (${latitude.toFixed(6)}, ${longitude.toFixed(6)})`;
+                currentOriginLabel.value = stationLabel.value;
+                originStatus.textContent = "Current location selected as the route origin. It is not a registered fire station.";
+                clearStaleRoute();
+                updateLocationFields();
             }, error => {
                 const messages = {
-                    1: "Location permission was denied. Allow access in browser settings or enter an address.",
-                    2: "Your location is unavailable. Check device location services or enter an address.",
-                    3: "Location detection timed out. Try again or enter an address."
+                    1: "Location permission was denied. Select a registered station or allow location access in browser settings.",
+                    2: "Your location is unavailable. Check device location services or select a registered station.",
+                    3: "Location detection timed out. Try again or select a registered station."
                 };
-                locationStatus.textContent = messages[error.code] || "Could not detect your location. Enter an address instead.";
+                originStatus.textContent = messages[error.code] || "Could not detect your location. Select a registered station.";
             }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 60000});
         });
 
-        originInput.addEventListener("input", () => {
-            originLatitude.value = "";
-            originLongitude.value = "";
+        document.getElementById("locate-incident").addEventListener("click", async event => {
+            const query = incidentInput.value.trim();
+            if (query.length < 3) {
+                locationStatus.textContent = "Enter a more complete fire incident address, city, or landmark.";
+                return;
+            }
+            const button = event.currentTarget;
+            button.disabled = true;
+            locationStatus.textContent = "Searching OpenStreetMap for the incident location…";
+            try {
+                const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, {
+                    headers: {Accept: "application/json"}
+                });
+                const payload = await response.json();
+                if (!response.ok) {
+                    throw new Error(payload.error || "Incident address search failed.");
+                }
+                incidentLatitude.value = payload.location.lat;
+                incidentLongitude.value = payload.location.lon;
+                incidentInput.value = payload.location.display_name;
+                locationStatus.textContent = `Incident located: ${payload.location.display_name}`;
+                clearStaleRoute();
+            } catch (error) {
+                incidentLatitude.value = "";
+                incidentLongitude.value = "";
+                locationStatus.textContent = error.message || "Address search failed. Check your connection and retry.";
+                clearStaleRoute();
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        stationSearchButton.addEventListener("click", async () => {
+            const query = stationSearchInput.value.trim();
+            if (query.length < 2 || query.length > 120) {
+                stationSearchStatus.textContent = "Enter at least two characters for the fire station area.";
+                return;
+            }
+            stationSearchButton.disabled = true;
+            stationSearchStatus.textContent = "Searching OpenStreetMap fire station listings…";
+            try {
+                const response = await fetch(
+                    `/api/fire-stations/search?q=${encodeURIComponent(query)}`,
+                    {headers: {Accept: "application/json"}}
+                );
+                const payload = await response.json();
+                if (!response.ok) {
+                    throw new Error(payload.error || "Fire station search failed.");
+                }
+                const optionsById = new Map(
+                    Array.from(fireStationSelect.options).map(option => [option.value, option])
+                );
+                payload.results.forEach(station => {
+                    if (optionsById.has(station.id)) {
+                        return;
+                    }
+                    const option = document.createElement("option");
+                    option.value = station.id;
+                    option.textContent = `${station.name} — ${station.display_name}`;
+                    option.dataset.lat = station.lat;
+                    option.dataset.lon = station.lon;
+                    option.dataset.name = station.name;
+                    option.dataset.address = station.display_name;
+                    fireStationSelect.add(option);
+                });
+                if (!payload.results.length) {
+                    stationSearchStatus.textContent = "No fire station listings found for that area. Try another query or enter an address.";
+                    return;
+                }
+                const first = payload.results[0];
+                fireStationSelect.value = first.id;
+                fireStationSelect.dispatchEvent(new Event("change"));
+                stationSearchStatus.textContent =
+                    `${payload.results.length} OpenStreetMap station listing(s) added. Listings may be incomplete; verify before use.`;
+            } catch (error) {
+                stationSearchStatus.textContent = error.message || "Fire station search failed. Check your connection and retry.";
+            } finally {
+                stationSearchButton.disabled = false;
+            }
+        });
+
+        incidentInput.addEventListener("input", () => {
+            incidentLatitude.value = "";
+            incidentLongitude.value = "";
+            locationStatus.textContent = "Incident address changed. Locate it on the map or submit to search again.";
+            clearStaleRoute();
+        });
+
+        customStationInput.addEventListener("input", () => {
+            stationLatitude.value = "";
+            stationLongitude.value = "";
+            stationLabel.value = "";
+            clearStaleRoute();
         });
 
         routeForm.addEventListener("submit", () => {

@@ -4,21 +4,29 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request, url_for
 from flask_socketio import SocketIO, join_room
 
 from dijkstra import k_shortest_routes
-from graph_data import LOCATION_NAMES, ROAD_GRAPH
+from graph_data import (
+    LOCATION_DESIGNATIONS,
+    LOCATION_NAMES,
+    ROAD_DISTANCES_KM,
+    ROAD_GRAPH,
+)
 from osm_routing import (
     RoutingServiceError,
     geocode_location,
+    get_fire_station,
+    get_fire_stations,
     get_hospital,
-    get_hospitals,
     get_osrm_routes,
     location_from_coordinates,
     make_route_options,
     search_hospitals,
+    search_fire_stations,
 )
 from trip_tracking import (
     authorize_trip,
@@ -40,7 +48,12 @@ DATABASE_PATH = os.environ.get(
 )
 os.makedirs(os.path.dirname(os.path.abspath(DATABASE_PATH)), exist_ok=True)
 
-PRIORITIES = ("Low", "Medium", "High", "Critical")
+SEVERITIES = ("Low", "Medium", "High", "Critical")
+DEFAULT_MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+DEFAULT_MAP_TILE_ATTRIBUTION = (
+    '&copy; <a href="https://www.openstreetmap.org/copyright">'
+    "OpenStreetMap contributors</a>"
+)
 NODE_POSITIONS = {
     "H": (80, 210),
     "A": (250, 100),
@@ -49,6 +62,37 @@ NODE_POSITIONS = {
     "D": (440, 300),
     "P": (610, 210),
 }
+
+
+def configured_map_tiles():
+    tile_url = os.environ.get("MAP_TILE_URL", DEFAULT_MAP_TILE_URL).strip()
+    attribution = os.environ.get(
+        "MAP_TILE_ATTRIBUTION", DEFAULT_MAP_TILE_ATTRIBUTION
+    ).strip()
+    try:
+        max_zoom = int(os.environ.get("MAP_TILE_MAX_ZOOM", "19"))
+    except ValueError as exc:
+        raise ValueError("MAP_TILE_MAX_ZOOM must be an integer from 0 to 24.") from exc
+
+    parsed_url = urlsplit(tile_url)
+    if (
+        parsed_url.scheme != "https"
+        or not parsed_url.netloc
+        or not all(f"{{{coordinate}}}" in tile_url for coordinate in ("z", "x", "y"))
+    ):
+        raise ValueError(
+            "MAP_TILE_URL must be an HTTPS tile URL containing {z}, {x}, and {y}."
+        )
+    if not attribution:
+        raise ValueError("MAP_TILE_ATTRIBUTION must identify the configured tile provider.")
+    if not 0 <= max_zoom <= 24:
+        raise ValueError("MAP_TILE_MAX_ZOOM must be an integer from 0 to 24.")
+
+    return {
+        "url": tile_url,
+        "attribution": attribution,
+        "maxZoom": max_zoom,
+    }
 
 
 def road_key(first, second):
@@ -107,7 +151,8 @@ def initialize_database():
                 arrival_time TEXT NOT NULL,
                 searched_at TEXT NOT NULL,
                 data_source TEXT NOT NULL DEFAULT 'demo',
-                estimated_distance_km REAL
+                estimated_distance_km REAL,
+                severity TEXT
             )
             """
         )
@@ -141,6 +186,13 @@ def initialize_database():
             connection.execute(
                 "ALTER TABLE route_history ADD COLUMN estimated_distance_km REAL"
             )
+        if "severity" not in columns:
+            connection.execute(
+                "ALTER TABLE route_history ADD COLUMN severity TEXT"
+            )
+        connection.execute(
+            "UPDATE route_history SET severity = priority WHERE severity IS NULL"
+        )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS trips (
@@ -167,8 +219,31 @@ def initialize_database():
                 location_update_count INTEGER NOT NULL DEFAULT 0,
                 route_distance_m REAL NOT NULL,
                 route_duration_s REAL NOT NULL,
-                route_geometry TEXT NOT NULL
+                route_geometry TEXT NOT NULL,
+                fire_unit_id TEXT,
+                severity TEXT
             )
+            """
+        )
+        trip_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(trips)")
+        }
+        if "fire_unit_id" not in trip_columns:
+            connection.execute("ALTER TABLE trips ADD COLUMN fire_unit_id TEXT")
+        if "severity" not in trip_columns:
+            connection.execute("ALTER TABLE trips ADD COLUMN severity TEXT")
+        connection.execute(
+            """
+            UPDATE trips
+            SET fire_unit_id = ambulance_id
+            WHERE fire_unit_id IS NULL
+            """
+        )
+        connection.execute(
+            """
+            UPDATE trips
+            SET severity = priority
+            WHERE severity IS NULL
             """
         )
         connection.execute(
@@ -289,6 +364,13 @@ def build_route(path, graph):
         "path": path,
         "path_names": [LOCATION_NAMES[node] for node in path],
         "duration": duration,
+        "distance_km": round(
+            sum(
+                ROAD_DISTANCES_KM[road_key(first, second)]
+                for first, second in zip(path, path[1:])
+            ),
+            1,
+        ),
         "roads": [
             {
                 "from_code": first,
@@ -305,27 +387,28 @@ def build_route(path, graph):
     }
 
 
-def add_history(source, destination, route, priority, departure, arrival, data_source):
+def add_history(source, destination, route, severity, departure, arrival, data_source):
     with database_connection() as connection:
         connection.execute(
             """
             INSERT INTO route_history (
                 source, destination, route_codes, duration_minutes, priority,
                 departure_time, arrival_time, searched_at, data_source,
-                estimated_distance_km
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                estimated_distance_km, severity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source,
                 destination,
                 json.dumps(route.get("history_path", route["path"])),
                 route["duration"],
-                priority,
+                severity,
                 departure.isoformat(timespec="minutes"),
                 arrival.isoformat(timespec="minutes"),
                 datetime.now().astimezone().isoformat(timespec="seconds"),
                 data_source,
                 route.get("distance_km"),
+                severity,
             ),
         )
 
@@ -353,7 +436,7 @@ def load_history():
                 "duration": row["duration_minutes"],
                 "arrival": row["arrival_time"].replace("T", " "),
                 "distance_km": row["estimated_distance_km"],
-                "priority": row["priority"],
+                "severity": row["severity"] or row["priority"],
                 "data_source": row["data_source"],
                 "searched_at": row["searched_at"].replace("T", " "),
             }
@@ -420,15 +503,19 @@ def graph_for_ui(roads):
 def render_page(
     source="H",
     destination="P",
-    priority="Low",
+    severity="Low",
     departure_value=None,
     routing_mode="demo",
     origin_text="",
-    hospital_id="adarsh",
-    destination_mode="hospital",
+    station_id="kengeri-fire-station",
+    destination_mode="fire_station",
     destination_text="",
     origin_lat="",
     origin_lon="",
+    station_lat="",
+    station_lon="",
+    station_label="",
+    station_mode=None,
     result=None,
     error=None,
     notice=None,
@@ -443,21 +530,29 @@ def render_page(
     return render_template(
         "index.html",
         locations=[
-            {"code": code, "name": name}
+            {
+                "code": code,
+                "name": name,
+                "designation": LOCATION_DESIGNATIONS[code],
+            }
             for code, name in LOCATION_NAMES.items()
         ],
         source=source,
         destination=destination,
         routing_mode=routing_mode,
-        origin_text=origin_text,
-        hospital_id=hospital_id,
-        destination_mode=destination_mode,
-        destination_text=destination_text,
-        origin_lat=origin_lat,
-        origin_lon=origin_lon,
-        hospitals=get_hospitals(),
-        priority=priority,
-        priorities=PRIORITIES,
+        incident_text=origin_text,
+        station_id=station_id,
+        station_mode=station_mode or destination_mode,
+        station_text=destination_text,
+        station_lat=station_lat,
+        station_lon=station_lon,
+        station_label=station_label,
+        incident_lat=origin_lat,
+        incident_lon=origin_lon,
+        fire_stations=get_fire_stations(),
+        map_tile_config=configured_map_tiles(),
+        severity=severity,
+        severities=SEVERITIES,
         departure_value=departure_value,
         result=result,
         error=error,
@@ -496,40 +591,75 @@ def protect_trip_responses(response):
 
 @app.route("/dispatch", methods=["GET", "POST"])
 def dispatch_home():
+    fire_stations = get_fire_stations()
+    dispatch_map_data = {
+        "station": fire_stations[0],
+        "incident": None,
+        "route": None,
+    }
     if request.method == "GET":
-        return render_template("dispatch.html", priorities=PRIORITIES)
+        return render_template(
+            "dispatch.html",
+            severities=SEVERITIES,
+            fire_stations=fire_stations,
+            dispatch_map_data=dispatch_map_data,
+            map_tile_config=configured_map_tiles(),
+        )
 
-    ambulance_id = request.form.get("ambulance_id", "").strip()
-    origin_text = request.form.get("origin", "").strip()
-    destination_text = request.form.get("destination", "").strip()
-    destination_lat = request.form.get("destination_lat", "").strip()
-    destination_lon = request.form.get("destination_lon", "").strip()
-    priority = request.form.get("priority", "")
+    fire_unit_id = request.form.get(
+        "fire_unit_id", request.form.get("ambulance_id", "")
+    ).strip()
+    origin_text = request.form.get(
+        "fire_station", request.form.get("origin", "")
+    ).strip()
+    destination_text = request.form.get(
+        "incident", request.form.get("destination", "")
+    ).strip()
+    origin_lat = request.form.get("fire_station_lat", "").strip()
+    origin_lon = request.form.get("fire_station_lon", "").strip()
+    destination_lat = request.form.get(
+        "incident_lat", request.form.get("destination_lat", "")
+    ).strip()
+    destination_lon = request.form.get(
+        "incident_lon", request.form.get("destination_lon", "")
+    ).strip()
+    severity = request.form.get("severity", request.form.get("priority", ""))
     error = None
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", ambulance_id):
-        error = "Enter an ambulance ID using up to 32 letters, numbers, hyphens, or underscores."
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", fire_unit_id):
+        error = "Enter a fire unit ID using up to 32 letters, numbers, hyphens, or underscores."
     elif not origin_text or len(origin_text) > 256:
-        error = "Enter a starting address up to 256 characters."
+        error = "Choose a fire station or enter its address up to 256 characters."
     elif not destination_text or len(destination_text) > 256:
-        error = "Enter a destination up to 256 characters."
-    elif priority not in PRIORITIES:
-        error = "Choose a valid emergency priority."
+        error = "Enter the fire incident location up to 256 characters."
+    elif severity not in SEVERITIES:
+        error = "Choose a valid fire severity."
     if error:
         return render_template(
             "dispatch.html",
-            priorities=PRIORITIES,
+            severities=SEVERITIES,
+            fire_stations=fire_stations,
+            dispatch_map_data=dispatch_map_data,
+            map_tile_config=configured_map_tiles(),
             error=error,
-            ambulance_id=ambulance_id,
-            origin=origin_text,
-            destination=destination_text,
-            priority=priority,
+            fire_unit_id=fire_unit_id,
+            fire_station=origin_text,
+            fire_station_lat=origin_lat,
+            fire_station_lon=origin_lon,
+            incident=destination_text,
+            severity=severity,
         ), 400
 
     try:
-        origin = geocode_location(origin_text, DATABASE_PATH)
+        if origin_lat or origin_lon:
+            if not origin_lat or not origin_lon:
+                raise ValueError("Both selected fire station coordinates are required.")
+            origin = location_from_coordinates(origin_lat, origin_lon)
+            origin["display_name"] = origin_text
+        else:
+            origin = geocode_location(origin_text, DATABASE_PATH)
         if destination_lat or destination_lon:
             if not destination_lat or not destination_lon:
-                raise ValueError("Both selected hospital coordinates are required.")
+                raise ValueError("Both selected incident coordinates are required.")
             destination = location_from_coordinates(
                 destination_lat, destination_lon
             )
@@ -539,16 +669,34 @@ def dispatch_home():
         raw_routes = get_osrm_routes(origin, destination)
         routes = make_route_options(raw_routes, origin, destination)
         selected_route = min(routes, key=lambda route: route["duration_seconds"])
+        dispatch_map_data = {
+            "station": {
+                "name": origin["display_name"],
+                "lat": origin["lat"],
+                "lon": origin["lon"],
+            },
+            "incident": {
+                "name": destination["display_name"],
+                "lat": destination["lat"],
+                "lon": destination["lon"],
+            },
+            "route": {
+                "geometry": selected_route["geometry"],
+                "distance_km": selected_route["distance_km"],
+                "duration_minutes": selected_route["duration"],
+                "instructions": selected_route["instructions"],
+            },
+        }
         trip_id, driver_token, viewer_token = create_trip(
             DATABASE_PATH,
-            ambulance_id,
+            fire_unit_id,
             origin["display_name"],
             origin["lat"],
             origin["lon"],
             destination["display_name"],
             destination["lat"],
             destination["lon"],
-            priority,
+            severity,
             selected_route["distance_km"] * 1000,
             selected_route["duration_seconds"],
             json.dumps(selected_route["geometry"]),
@@ -556,22 +704,32 @@ def dispatch_home():
     except RoutingServiceError as exc:
         return render_template(
             "dispatch.html",
-            priorities=PRIORITIES,
+            severities=SEVERITIES,
+            fire_stations=fire_stations,
+            dispatch_map_data=dispatch_map_data,
+            map_tile_config=configured_map_tiles(),
             error=exc.message,
-            ambulance_id=ambulance_id,
-            origin=origin_text,
-            destination=destination_text,
-            priority=priority,
+            fire_unit_id=fire_unit_id,
+            fire_station=origin_text,
+            fire_station_lat=origin_lat,
+            fire_station_lon=origin_lon,
+            incident=destination_text,
+            severity=severity,
         ), exc.status_code
     except ValueError as exc:
         return render_template(
             "dispatch.html",
-            priorities=PRIORITIES,
+            severities=SEVERITIES,
+            fire_stations=fire_stations,
+            dispatch_map_data=dispatch_map_data,
+            map_tile_config=configured_map_tiles(),
             error=str(exc),
-            ambulance_id=ambulance_id,
-            origin=origin_text,
-            destination=destination_text,
-            priority=priority,
+            fire_unit_id=fire_unit_id,
+            fire_station=origin_text,
+            fire_station_lat=origin_lat,
+            fire_station_lon=origin_lon,
+            incident=destination_text,
+            severity=severity,
         ), 400
 
     base_url = os.environ.get("PUBLIC_BASE_URL", request.host_url).rstrip("/")
@@ -583,11 +741,13 @@ def dispatch_home():
     )
     return render_template(
         "dispatch.html",
-        priorities=PRIORITIES,
+        severities=SEVERITIES,
+        dispatch_map_data=dispatch_map_data,
+        map_tile_config=configured_map_tiles(),
         created_trip={
             "id": trip_id,
-            "ambulance_id": ambulance_id,
-            "priority": priority,
+            "fire_unit_id": fire_unit_id,
+            "severity": severity,
             "distance_km": selected_route["distance_km"],
             "duration_minutes": selected_route["duration"],
             "driver_url": driver_url,
@@ -600,14 +760,22 @@ def dispatch_home():
 def driver_trip(trip_id):
     if get_trip(DATABASE_PATH, trip_id) is None:
         return "Trip not found.", 404
-    return render_template("driver.html", trip_id=trip_id)
+    return render_template(
+        "driver.html",
+        trip_id=trip_id,
+        map_tile_config=configured_map_tiles(),
+    )
 
 
 @app.get("/trips/<trip_id>/dispatcher")
 def dispatcher_trip(trip_id):
     if get_trip(DATABASE_PATH, trip_id) is None:
         return "Trip not found.", 404
-    return render_template("dispatcher.html", trip_id=trip_id)
+    return render_template(
+        "dispatcher.html",
+        trip_id=trip_id,
+        map_tile_config=configured_map_tiles(),
+    )
 
 
 @app.get("/api/trips/<trip_id>")
@@ -706,6 +874,34 @@ def hospital_search():
     return jsonify({"results": results})
 
 
+@app.get("/api/fire-stations/search")
+def fire_station_search():
+    query = request.args.get("q", "").strip()
+    if len(query) < 2 or len(query) > 120:
+        return _trip_api_error(
+            "Enter a fire station name or area from 2 to 120 characters.", 400
+        )
+    try:
+        results = search_fire_stations(query, DATABASE_PATH)
+    except RoutingServiceError as exc:
+        return _trip_api_error(exc.message, exc.status_code)
+    return jsonify({"results": results})
+
+
+@app.get("/api/geocode")
+def geocode_search():
+    query = request.args.get("q", "").strip()
+    if len(query) < 3 or len(query) > 256:
+        return _trip_api_error(
+            "Enter a location between 3 and 256 characters.", 400
+        )
+    try:
+        location = geocode_location(query, DATABASE_PATH)
+    except RoutingServiceError as exc:
+        return _trip_api_error(exc.message, exc.status_code)
+    return jsonify({"location": location})
+
+
 @socketio.on("subscribe_trip")
 def subscribe_trip(payload):
     if not isinstance(payload, dict):
@@ -725,12 +921,15 @@ def routes_for_mode(
     source,
     destination,
     routing_mode,
-    origin_text,
-    hospital_id,
-    destination_mode,
-    destination_text,
-    origin_lat,
-    origin_lon,
+    incident_text,
+    station_id,
+    station_mode,
+    station_text,
+    incident_lat,
+    incident_lon,
+    station_lat="",
+    station_lon="",
+    station_label="",
 ):
     if routing_mode == "demo":
         graph = get_effective_graph(load_road_conditions())
@@ -749,36 +948,89 @@ def routes_for_mode(
                 else f"Alternative route {index}"
             )
             route["mode"] = "demo"
-            route["distance_km"] = None
             route["instructions"] = []
             routes.append(route)
         return routes, "demo"
 
     if routing_mode != "osm":
         raise ValueError("Choose either Demo network or OpenStreetMap / OSRM routing.")
-    if origin_lat or origin_lon:
-        if not origin_lat or not origin_lon:
-            raise ValueError("Both current-location coordinates are required.")
-        origin = location_from_coordinates(origin_lat, origin_lon)
+    if station_mode in {"fire_station", "current_location", "custom_station"}:
+        if station_mode == "fire_station" and get_fire_station(station_id):
+            station = get_fire_station(station_id)
+            station = {
+                **station,
+                "display_name": f"{station['name']}, {station['address']}",
+            }
+        elif station_mode == "fire_station":
+            if not station_lat or not station_lon or not station_label:
+                raise ValueError("Choose a listed station or search OpenStreetMap for one.")
+            station = location_from_coordinates(station_lat, station_lon)
+            station["name"] = station_label
+            station["display_name"] = station_label
+            station["origin_type"] = "fire_station"
+        elif station_mode == "current_location":
+            if not station_lat or not station_lon:
+                raise ValueError("Use the location button or select a registered fire station.")
+            station = location_from_coordinates(station_lat, station_lon)
+            station["name"] = "Your current location"
+            station["display_name"] = station_label or (
+                f"Your current location ({station['lat']:.6f}, {station['lon']:.6f})"
+            )
+            station["origin_type"] = "current_location"
+        else:
+            if not station_text or len(station_text) > 256:
+                raise ValueError("Enter a fire station address up to 256 characters.")
+            try:
+                station = geocode_location(station_text, DATABASE_PATH)
+            except RoutingServiceError as exc:
+                if exc.status_code == 400 and exc.message.startswith("Address not found."):
+                    raise RoutingServiceError(
+                        "Could not locate the starting fire station by that address. "
+                        "Search OpenStreetMap by town or area (for example, Virudhunagar) "
+                        "and select a listed fire station. Plus Codes may not be indexed "
+                        "as free-text addresses.",
+                        400,
+                    ) from exc
+                raise
+            station["name"] = station["display_name"]
+
+        if incident_lat or incident_lon:
+            if not incident_lat or not incident_lon:
+                raise ValueError("Both fire incident coordinates are required.")
+            incident = location_from_coordinates(incident_lat, incident_lon)
+            incident["display_name"] = incident_text
+        else:
+            if not incident_text or len(incident_text) > 256:
+                raise ValueError("Enter the fire incident location up to 256 characters.")
+            incident = geocode_location(incident_text, DATABASE_PATH)
+        incident["name"] = incident["display_name"]
+        origin, destination = station, incident
     else:
-        if not origin_text or len(origin_text) > 256:
-            raise ValueError("Enter a starting address up to 256 characters.")
-        origin = geocode_location(origin_text, DATABASE_PATH)
-    if destination_mode == "hospital":
-        destination = get_hospital(hospital_id)
-        if destination is None:
-            raise ValueError("Choose a valid hospital from the list.")
-        destination = {
-            **destination,
-            "display_name": f"{destination['name']}, {destination['address']}",
-        }
-    elif destination_mode == "custom":
-        if not destination_text or len(destination_text) > 256:
-            raise ValueError("Enter a destination up to 256 characters.")
-        destination = geocode_location(destination_text, DATABASE_PATH)
-        destination["name"] = destination["display_name"]
-    else:
-        raise ValueError("Choose a hospital destination or enter a custom destination.")
+        # Preserve old hospital/custom form submissions while routing current
+        # fire-station submissions explicitly from station to incident.
+        if incident_lat or incident_lon:
+            if not incident_lat or not incident_lon:
+                raise ValueError("Both current-location coordinates are required.")
+            origin = location_from_coordinates(incident_lat, incident_lon)
+        else:
+            if not incident_text or len(incident_text) > 256:
+                raise ValueError("Enter the fire incident location up to 256 characters.")
+            origin = geocode_location(incident_text, DATABASE_PATH)
+        if station_mode == "hospital":
+            destination = get_hospital(station_id)
+            if destination is None:
+                raise ValueError("Choose a valid legacy destination.")
+            destination = {
+                **destination,
+                "display_name": f"{destination['name']}, {destination['address']}",
+            }
+        elif station_mode == "custom":
+            if not station_text or len(station_text) > 256:
+                raise ValueError("Enter a destination address up to 256 characters.")
+            destination = geocode_location(station_text, DATABASE_PATH)
+            destination["name"] = destination["display_name"]
+        else:
+            raise ValueError("Choose a fire station or enter a custom station address.")
     api_routes = get_osrm_routes(origin, destination)
     routes = make_route_options(api_routes, origin, destination)
     for route in routes:
@@ -821,69 +1073,141 @@ def index():
     routing_mode = request.form.get("routing_mode", "demo")
     source = request.form.get("source", "H")
     destination = request.form.get("destination", "P")
-    origin_text = request.form.get("origin_text", "").strip()
-    hospital_id = request.form.get("hospital_id", "adarsh")
-    destination_mode = request.form.get("destination_mode", "hospital")
-    destination_text = request.form.get("destination_text", "").strip()
-    origin_lat = request.form.get("origin_lat", "").strip()
-    origin_lon = request.form.get("origin_lon", "").strip()
-    priority = request.form.get("priority", "Low")
+    incident_text = request.form.get(
+        "incident_text", request.form.get("origin_text", "")
+    ).strip()
+    station_id = request.form.get(
+        "fire_station_id", request.form.get("hospital_id", "kengeri-fire-station")
+    )
+    station_mode = request.form.get(
+        "station_mode", request.form.get("destination_mode", "fire_station")
+    )
+    station_text = request.form.get(
+        "station_text", request.form.get("destination_text", "")
+    ).strip()
+    incident_lat = request.form.get(
+        "incident_lat", request.form.get("origin_lat", "")
+    ).strip()
+    incident_lon = request.form.get(
+        "incident_lon", request.form.get("origin_lon", "")
+    ).strip()
+    station_lat = request.form.get("station_lat", "").strip()
+    station_lon = request.form.get("station_lon", "").strip()
+    station_label = request.form.get("station_label", "").strip()
+    severity = request.form.get("severity", request.form.get("priority", "Low"))
     departure_value = request.form.get("departure_time", "")
 
     if routing_mode not in {"demo", "osm"}:
         return render_page(error="Please choose a valid routing mode.")
-    if routing_mode == "demo" and (
-        source not in ROAD_GRAPH or destination not in ROAD_GRAPH
-    ):
-        return render_page(error="Please select valid locations.")
+    if routing_mode == "demo" and (source != "H" or destination != "P"):
+        return render_page(
+            source,
+            destination,
+            severity,
+            departure_value,
+            routing_mode,
+            incident_text,
+            station_id,
+            error="Demo routes must start at Fire Station H and end at Fire Incident P.",
+        )
     if routing_mode == "demo" and source == destination:
         return render_page(
-            source, destination, priority, departure_value, routing_mode,
-            origin_text, hospital_id,
+            source, destination, severity, departure_value, routing_mode,
+            incident_text, station_id,
             error="Choose two different locations.",
         )
-    if priority not in PRIORITIES:
+    if routing_mode == "osm" and not incident_lat and not incident_text:
+        return render_page(
+            source,
+            destination,
+            severity,
+            departure_value,
+            routing_mode,
+            incident_text,
+            station_id,
+            station_mode,
+            station_text,
+            incident_lat,
+            incident_lon,
+            station_lat=station_lat,
+            station_lon=station_lon,
+            station_label=station_label,
+            station_mode=station_mode,
+            error="Enter a destination fire incident address or locate it on the map.",
+        )
+    if severity not in SEVERITIES:
         return render_page(
             source, destination, "Low", departure_value, routing_mode,
-            origin_text, hospital_id,
-            error="Please select a valid emergency priority.",
+            incident_text, station_id,
+            error="Please select a valid fire severity.",
         )
     if routing_mode == "osm" and (
-        (not origin_lat and (not origin_text or len(origin_text) > 256))
-        or (origin_lat and (not origin_lon or not origin_text))
+        (not incident_lat and (not incident_text or len(incident_text) > 256))
+        or (incident_lat and (not incident_lon or not incident_text))
         or (
-            destination_mode == "hospital"
-            and get_hospital(hospital_id) is None
+            station_mode == "fire_station"
+            and get_fire_station(station_id) is None
+            and (
+                not station_lat
+                or not station_lon
+                or not station_label
+                or len(station_label) > 256
+            )
         )
         or (
-            destination_mode == "custom"
-            and (not destination_text or len(destination_text) > 256)
+            station_mode == "current_location"
+            and (not station_lat or not station_lon)
         )
-        or destination_mode not in {"hospital", "custom"}
+        or (
+            station_mode == "hospital"
+            and get_hospital(station_id) is None
+        )
+        or (
+            station_mode in {"custom", "custom_station"}
+            and (
+                not station_text or len(station_text) > 256
+            )
+        )
+        or station_mode
+        not in {
+            "fire_station",
+            "current_location",
+            "hospital",
+            "custom",
+            "custom_station",
+        }
     ):
         return render_page(
-            source, destination, priority, departure_value, routing_mode,
-            origin_text, hospital_id, destination_mode, destination_text,
-            origin_lat, origin_lon,
-            error="Enter valid starting and destination locations, or choose a listed hospital.",
+            source, destination, severity, departure_value, routing_mode,
+            incident_text, station_id, station_mode, station_text,
+            incident_lat, incident_lon,
+            station_lat=station_lat, station_lon=station_lon,
+            station_label=station_label, station_mode=station_mode,
+            error="Enter valid locations, or choose a listed fire station.",
         )
     try:
         departure = datetime.fromisoformat(departure_value)
     except (TypeError, ValueError):
         return render_page(
-            source, destination, priority, routing_mode=routing_mode,
-            origin_text=origin_text, hospital_id=hospital_id,
-            destination_mode=destination_mode,
-            destination_text=destination_text,
-            origin_lat=origin_lat,
-            origin_lon=origin_lon,
+            source, destination, severity, routing_mode=routing_mode,
+            origin_text=incident_text, station_id=station_id,
+            destination_mode=station_mode,
+            destination_text=station_text,
+            origin_lat=incident_lat,
+            origin_lon=incident_lon,
+            station_lat=station_lat,
+            station_lon=station_lon,
+            station_label=station_label,
+            station_mode=station_mode,
             error="Enter a valid departure date and time.",
         )
     if departure.tzinfo is not None:
         return render_page(
-            source, destination, priority, departure_value, routing_mode,
-            origin_text, hospital_id, destination_mode, destination_text,
-            origin_lat, origin_lon,
+            source, destination, severity, departure_value, routing_mode,
+            incident_text, station_id, station_mode, station_text,
+            incident_lat, incident_lon,
+            station_lat=station_lat, station_lon=station_lon,
+            station_label=station_label, station_mode=station_mode,
             error="Use a local departure time without a timezone.",
         )
 
@@ -892,24 +1216,31 @@ def index():
             source,
             destination,
             routing_mode,
-            origin_text,
-            hospital_id,
-            destination_mode,
-            destination_text,
-            origin_lat,
-            origin_lon,
+            incident_text,
+            station_id,
+            station_mode,
+            station_text,
+            incident_lat,
+            incident_lon,
+            station_lat,
+            station_lon,
+            station_label,
         )
     except ValueError as exc:
         return render_page(
-            source, destination, priority, departure_value, routing_mode,
-            origin_text, hospital_id, destination_mode, destination_text,
-            origin_lat, origin_lon, error=str(exc),
+            source, destination, severity, departure_value, routing_mode,
+            incident_text, station_id, station_mode, station_text,
+            incident_lat, incident_lon, error=str(exc),
+            station_lat=station_lat, station_lon=station_lon,
+            station_label=station_label, station_mode=station_mode,
         )
     except RoutingServiceError as exc:
         return render_page(
-            source, destination, priority, departure_value, routing_mode,
-            origin_text, hospital_id, destination_mode, destination_text,
-            origin_lat, origin_lon, error=exc.message,
+            source, destination, severity, departure_value, routing_mode,
+            incident_text, station_id, station_mode, station_text,
+            incident_lat, incident_lon, error=exc.message,
+            station_lat=station_lat, station_lon=station_lon,
+            station_label=station_label, station_mode=station_mode,
         )
 
     route_index = next(
@@ -923,9 +1254,11 @@ def index():
             route_index = -1
         if not 0 <= route_index < len(routes):
             return render_page(
-                source, destination, priority, departure_value, routing_mode,
-                origin_text, hospital_id, destination_mode, destination_text,
-                origin_lat, origin_lon,
+                source, destination, severity, departure_value, routing_mode,
+                incident_text, station_id, station_mode, station_text,
+                incident_lat, incident_lon,
+                station_lat=station_lat, station_lon=station_lon,
+                station_label=station_label, station_mode=station_mode,
                 error="That route is no longer available. Search again to refresh route options.",
             )
 
@@ -948,7 +1281,7 @@ def index():
         history_source,
         history_destination,
         selected_route,
-        priority,
+        severity,
         departure,
         selected_arrival,
         data_source,
@@ -956,14 +1289,16 @@ def index():
     result = {
         "routes": routes,
         "selected": selected_route,
-        "priority": priority,
+        "severity": severity,
         "departure": departure.strftime("%Y-%m-%d %H:%M"),
         "mode": routing_mode,
     }
     return render_page(
-        source, destination, priority, departure_value, routing_mode,
-        origin_text, hospital_id, destination_mode, destination_text,
-        origin_lat, origin_lon, result=result,
+        source, destination, severity, departure_value, routing_mode,
+        incident_text, station_id, station_mode, station_text,
+        incident_lat, incident_lon, result=result,
+        station_lat=station_lat, station_lon=station_lon,
+        station_label=station_label, station_mode=station_mode,
     )
 
 

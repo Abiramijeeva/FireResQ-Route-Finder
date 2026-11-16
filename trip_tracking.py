@@ -31,7 +31,7 @@ def _token_hash(token):
 
 def create_trip(
     database_path,
-    ambulance_id,
+    fire_unit_id,
     origin_name,
     origin_lat,
     origin_lon,
@@ -54,12 +54,13 @@ def create_trip(
                 id, ambulance_id, origin_name, origin_lat, origin_lon,
                 destination_name, destination_lat, destination_lon, priority,
                 status, driver_token_hash, viewer_token_hash, created_at,
-                route_distance_m, route_duration_s, route_geometry
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?)
+                route_distance_m, route_duration_s, route_geometry,
+                fire_unit_id, severity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trip_id,
-                ambulance_id,
+                fire_unit_id,
                 origin_name,
                 origin_lat,
                 origin_lon,
@@ -73,6 +74,8 @@ def create_trip(
                 route_distance_m,
                 route_duration_s,
                 route_geometry,
+                fire_unit_id,
+                priority,
             ),
         )
         connection.execute(
@@ -145,9 +148,11 @@ def authorize_trip(database_path, trip_id, token, role=None):
 def public_trip(trip):
     if trip is None:
         return None
+    fire_unit_id = trip["fire_unit_id"] or trip["ambulance_id"]
+    severity = trip["severity"] or trip["priority"]
     return {
         "id": trip["id"],
-        "ambulance_id": trip["ambulance_id"],
+        "fire_unit_id": fire_unit_id,
         "origin": {
             "name": trip["origin_name"],
             "lat": trip["origin_lat"],
@@ -158,7 +163,7 @@ def public_trip(trip):
             "lat": trip["destination_lat"],
             "lon": trip["destination_lon"],
         },
-        "priority": trip["priority"],
+        "severity": severity,
         "status": trip["status"],
         "created_at": trip["created_at"],
         "started_at": trip["started_at"],

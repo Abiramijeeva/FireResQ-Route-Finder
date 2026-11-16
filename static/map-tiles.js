@@ -1,42 +1,93 @@
 (() => {
-    const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-    const OSM_ATTRIBUTION =
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>';
+    window.addOpenStreetMapBaseLayer = (map, config) => {
+        if (!map) {
+            throw new Error("A Leaflet map is required to load map tiles.");
+        }
+        if (!config || typeof config !== "object") {
+            throw new Error("OpenStreetMap tile configuration is missing.");
+        }
+        if (
+            typeof config.url !== "string" ||
+            !/^https:\/\//i.test(config.url) ||
+            !["z", "x", "y"].every(coordinate =>
+                config.url.includes(`{${coordinate}}`)
+            )
+        ) {
+            throw new Error(
+                "OpenStreetMap tile URL is missing or invalid. Check MAP_TILE_URL."
+            );
+        }
+        if (
+            typeof config.attribution !== "string" ||
+            !config.attribution.trim() ||
+            !Number.isInteger(config.maxZoom) ||
+            config.maxZoom < 0 ||
+            config.maxZoom > 24
+        ) {
+            throw new Error("OpenStreetMap tile attribution or zoom configuration is invalid.");
+        }
 
-    function showUnavailableMessage(map) {
-        const control = L.control({position: "topright"});
-        control.onAdd = () => {
-            const notice = L.DomUtil.create("div", "map-tile-notice");
-            notice.setAttribute("role", "status");
-            notice.textContent =
-                "OpenStreetMap tiles are unavailable. Check the connection or tile-service status.";
-            return notice;
-        };
-        control.addTo(map);
-    }
-
-    window.addOpenStreetMapBaseLayer = map => {
-        const tileLayer = L.tileLayer(OSM_TILE_URL, {
-            attribution: OSM_ATTRIBUTION,
-            maxZoom: 19,
+        const tileLayer = L.tileLayer(config.url, {
+            attribution: config.attribution,
+            maxZoom: config.maxZoom,
         });
-        let unavailable = false;
-        const fail = () => {
-            if (unavailable) {
-                return;
-            }
-            unavailable = true;
-            window.clearTimeout(loadTimeout);
-            if (map.hasLayer(tileLayer)) {
-                map.removeLayer(tileLayer);
-            }
-            showUnavailableMessage(map);
-        };
-        const loadTimeout = window.setTimeout(fail, 15000);
 
-        tileLayer.on("tileerror", fail);
+        let noticeControl;
+        let noticeElement;
+        let loadTimeout;
+        let loadedTiles = 0;
+        let failedTiles = 0;
+
+        function showTileMessage(message) {
+            if (!noticeControl) {
+                noticeControl = L.control({position: "topright"});
+                noticeControl.onAdd = () => {
+                    noticeElement = L.DomUtil.create("div", "map-tile-notice");
+                    noticeElement.setAttribute("role", "alert");
+                    return noticeElement;
+                };
+                noticeControl.addTo(map);
+            }
+            noticeElement.textContent = message;
+            noticeElement.hidden = !message;
+        }
+
+        function clearLoadTimeout() {
+            if (loadTimeout) {
+                window.clearTimeout(loadTimeout);
+                loadTimeout = undefined;
+            }
+        }
+
+        tileLayer.on("loading", () => {
+            clearLoadTimeout();
+            loadedTiles = 0;
+            failedTiles = 0;
+            loadTimeout = window.setTimeout(() => {
+                if (loadedTiles === 0) {
+                    showTileMessage(
+                        "No map tiles loaded. Check your connection, browser extensions, and configured tile provider."
+                    );
+                }
+            }, 15000);
+        });
+        tileLayer.on("tileerror", () => {
+            failedTiles += 1;
+        });
+        tileLayer.on("tileload", () => {
+            loadedTiles += 1;
+        });
         tileLayer.on("load", () => {
-            window.clearTimeout(loadTimeout);
+            clearLoadTimeout();
+            if (failedTiles > 0) {
+                showTileMessage(
+                    loadedTiles === 0
+                        ? "Map tiles are unavailable. Check your connection, browser extensions, and configured tile provider."
+                        : "Some map tiles failed to load. Check your connection or configured tile provider."
+                );
+            } else {
+                showTileMessage("");
+            }
         });
         tileLayer.addTo(map);
         return tileLayer;
